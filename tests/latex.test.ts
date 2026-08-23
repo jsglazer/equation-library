@@ -102,4 +102,43 @@ describe("isInsideMath", () => {
 		expect(isInsideMath("$a$ + $b$ + text")).toBe(false);
 		expect(isInsideMath("$a$ + $b^2")).toBe(true);
 	});
+
+	it("does not treat currency as an open equation", () => {
+		expect(isInsideMath("the price rose to $100 and ")).toBe(false);
+		expect(isInsideMath("from $5 to $200, so ")).toBe(false);
+		expect(isInsideMath("costs $100, then $x^2")).toBe(true);
+	});
+
+	it("does not treat a dollar followed by a space as an open equation", () => {
+		expect(isInsideMath("paid $ 40 for ")).toBe(false);
+	});
+
+	it("treats a dollar typed at the cursor as an open equation", () => {
+		expect(isInsideMath("inline math starts here $")).toBe(true);
+	});
+
+	it("does not carry an unclosed inline delimiter across a line break", () => {
+		expect(isInsideMath("a stray $ sign\nnext line ")).toBe(false);
+		expect(isInsideMath("$x^2\n")).toBe(false);
+		expect(isInsideMath("$x^2\nstill $y^2")).toBe(true);
+	});
+
+	it("carries an unclosed block delimiter across line breaks", () => {
+		expect(isInsideMath("$$\nE = mc^2\n")).toBe(true);
+		expect(isInsideMath("$$\nE = mc^2\n$$\n\ntext ")).toBe(false);
+	});
+
+	it("ignores dollars inside fenced code blocks", () => {
+		expect(isInsideMath("```bash\n$ pandoc in.md\n```\n\ntext ")).toBe(false);
+		expect(isInsideMath("~~~\n$$ not math $\n~~~\n\ntext ")).toBe(false);
+	});
+
+	it("ignores dollars inside an inline code span", () => {
+		expect(isInsideMath("query: `$= dv.page(x)` and then ")).toBe(false);
+		expect(isInsideMath("`$=` then $x^2")).toBe(true);
+	});
+
+	it("still sees math after a fenced block closes", () => {
+		expect(isInsideMath("```\ncode\n```\n$x^2")).toBe(true);
+	});
 });

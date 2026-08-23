@@ -51,27 +51,73 @@ export function resolveInsertMode(format: InsertFormat, shiftKey: boolean): Inse
 	return shiftKey ? "block" : "inline";
 }
 
+/** Opening fence of a code block, which suspends all math parsing. */
+const FENCE = /^\s*(`{3,}|~{3,})/;
+
+/**
+ * Whether a `$` at this point can open inline math, judged by what follows it.
+ *
+ * `$100` is currency and `$ x` is prose, so neither opens an equation; a `$`
+ * sitting at the very end of the scanned text is the one the user just typed,
+ * so that does. Without this test every dollar amount above the cursor made
+ * the whole rest of the note look like an open equation.
+ */
+function opensInline(next: string | undefined): boolean {
+	if (next === undefined) return true;
+	return !/[\s0-9]/.test(next);
+}
+
 /**
  * Whether a position sits inside an already-open `$...$` or `$$...$$` span.
  *
  * `textBeforePosition` is everything in the document from its start up to the
  * position being tested — the same "scan from the top" approach the code
- * suggester uses for fenced code blocks. An escaped `\$` never toggles state.
- * `$$` is checked before a lone `$` so a block delimiter is never mistaken for
- * two inline ones.
+ * suggester uses for fenced code blocks.
+ *
+ * The two delimiters are scoped differently, because they behave differently:
+ * `$$` blocks span lines and so are tracked across the whole document, while
+ * inline `$` cannot cross a newline and so is reset on every line. Fenced code
+ * and inline code spans are skipped entirely (`$ pandoc ...` in a shell block
+ * and a Dataview `$=` query are not math), an
+ * escaped `\$` never toggles state, and `$$` is checked before a lone `$` so a
+ * block delimiter is never mistaken for two inline ones.
  */
 export function isInsideMath(textBeforePosition: string): boolean {
-	const text = textBeforePosition.replace(/\\\$/g, "  ");
+	const lines = textBeforePosition.replace(/\\\$/g, "  ").split("\n");
+	let fence: string | null = null;
 	let blockOpen = false;
 	let inlineOpen = false;
-	for (let i = 0; i < text.length; i += 1) {
-		if (text[i] !== "$") continue;
-		if (text[i + 1] === "$") {
-			blockOpen = !blockOpen;
-			i += 1;
+
+	for (const line of lines) {
+		const fenceMatch = FENCE.exec(line);
+		if (fenceMatch !== null) {
+			const marker = fenceMatch[1][0];
+			fence = fence === null ? marker : fence === marker ? null : fence;
 			continue;
 		}
-		if (!blockOpen) inlineOpen = !inlineOpen;
+		if (fence !== null) continue;
+
+		// Inline math never survives a line break; block math does.
+		inlineOpen = false;
+		let inCode = false;
+		for (let i = 0; i < line.length; i += 1) {
+			// A backtick run opens or closes a code span, and `$` inside one is
+			// not math — a Dataview `$=` query is the common case.
+			if (line[i] === "`") {
+				while (line[i + 1] === "`") i += 1;
+				inCode = !inCode;
+				continue;
+			}
+			if (inCode || line[i] !== "$") continue;
+			if (line[i + 1] === "$") {
+				blockOpen = !blockOpen;
+				i += 1;
+				continue;
+			}
+			if (blockOpen) continue;
+			if (inlineOpen) inlineOpen = false;
+			else if (opensInline(line[i + 1])) inlineOpen = true;
+		}
 	}
 	return blockOpen || inlineOpen;
 }

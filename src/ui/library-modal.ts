@@ -100,7 +100,7 @@ export class LibraryModal extends Modal {
 		this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
 		this.buildGenerator(contentEl);
 		this.buildFooter(contentEl);
-		this.latexInput.focus();
+		this.focusLatexInput();
 
 		const win = contentEl.win as Window & typeof globalThis;
 		this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
@@ -109,6 +109,29 @@ export class LibraryModal extends Modal {
 		});
 
 		void this.refreshCatalog();
+	}
+
+	/**
+	 * Puts the caret in the LaTeX source field, where typing belongs.
+	 *
+	 * Obsidian focuses the modal's first tabbable element — the search box —
+	 * after `onOpen` returns, so focusing once here is undone a moment later.
+	 * The deferred second call runs after that, and re-checks the field is
+	 * still on screen in case the modal was closed in between.
+	 */
+	private focusLatexInput(): void {
+		const focus = () => {
+			if (!this.latexInput.isConnected) return;
+			this.latexInput.focus();
+			const end = this.latexInput.value.length;
+			this.latexInput.setSelectionRange(end, end);
+		};
+		focus();
+		const win = this.contentEl.win as Window & typeof globalThis;
+		// Both deferrals fire inside the same frame; which one lands after
+		// Obsidian's own focus call depends on the platform, so run both.
+		win.setTimeout(focus, 0);
+		win.requestAnimationFrame(focus);
 	}
 
 	onClose(): void {

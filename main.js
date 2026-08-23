@@ -46,18 +46,42 @@ function resolveInsertMode(format, shiftKey) {
   if (format === "always-block") return "block";
   return shiftKey ? "block" : "inline";
 }
+var FENCE = /^\s*(`{3,}|~{3,})/;
+function opensInline(next) {
+  if (next === void 0) return true;
+  return !/[\s0-9]/.test(next);
+}
 function isInsideMath(textBeforePosition) {
-  const text = textBeforePosition.replace(/\\\$/g, "  ");
+  const lines = textBeforePosition.replace(/\\\$/g, "  ").split("\n");
+  let fence = null;
   let blockOpen = false;
   let inlineOpen = false;
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] !== "$") continue;
-    if (text[i + 1] === "$") {
-      blockOpen = !blockOpen;
-      i += 1;
+  for (const line of lines) {
+    const fenceMatch = FENCE.exec(line);
+    if (fenceMatch !== null) {
+      const marker = fenceMatch[1][0];
+      fence = fence === null ? marker : fence === marker ? null : fence;
       continue;
     }
-    if (!blockOpen) inlineOpen = !inlineOpen;
+    if (fence !== null) continue;
+    inlineOpen = false;
+    let inCode = false;
+    for (let i = 0; i < line.length; i += 1) {
+      if (line[i] === "`") {
+        while (line[i + 1] === "`") i += 1;
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode || line[i] !== "$") continue;
+      if (line[i + 1] === "$") {
+        blockOpen = !blockOpen;
+        i += 1;
+        continue;
+      }
+      if (blockOpen) continue;
+      if (inlineOpen) inlineOpen = false;
+      else if (opensInline(line[i + 1])) inlineOpen = true;
+    }
   }
   return blockOpen || inlineOpen;
 }
@@ -16840,13 +16864,33 @@ var LibraryModal = class extends import_obsidian4.Modal {
     this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
     this.buildGenerator(contentEl);
     this.buildFooter(contentEl);
-    this.latexInput.focus();
+    this.focusLatexInput();
     const win = contentEl.win;
     this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
       root: this.scrollEl,
       rootMargin: "200px"
     });
     void this.refreshCatalog();
+  }
+  /**
+   * Puts the caret in the LaTeX source field, where typing belongs.
+   *
+   * Obsidian focuses the modal's first tabbable element — the search box —
+   * after `onOpen` returns, so focusing once here is undone a moment later.
+   * The deferred second call runs after that, and re-checks the field is
+   * still on screen in case the modal was closed in between.
+   */
+  focusLatexInput() {
+    const focus = () => {
+      if (!this.latexInput.isConnected) return;
+      this.latexInput.focus();
+      const end = this.latexInput.value.length;
+      this.latexInput.setSelectionRange(end, end);
+    };
+    focus();
+    const win = this.contentEl.win;
+    win.setTimeout(focus, 0);
+    win.requestAnimationFrame(focus);
   }
   onClose() {
     var _a2, _b2;
