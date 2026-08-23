@@ -16660,27 +16660,23 @@ async function renderLatexToPngBlob(doc, latex, mode) {
   const height = Math.max(1, Math.ceil(rect.height));
   measure.remove();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="${boxStyle}"><style>${mathlive_bundled_default}</style>${markup}</div></foreignObject></svg>`;
-  const svgUrl = win.URL.createObjectURL(new win.Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-  try {
-    const image = new win.Image();
-    await new Promise((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("Could not rasterize the equation."));
-      image.src = svgUrl;
-    });
-    const canvas = doc.createElement("canvas");
-    canvas.width = width * PNG_EXPORT_SCALE;
-    canvas.height = height * PNG_EXPORT_SCALE;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("This window cannot render a canvas.");
-    ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
-    ctx.drawImage(image, 0, 0, width, height);
-    return await new Promise((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not create a PNG.")), "image/png");
-    });
-  } finally {
-    win.URL.revokeObjectURL(svgUrl);
-  }
+  const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  const image = new win.Image();
+  await new Promise((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Could not rasterize the equation."));
+    image.src = svgUrl;
+  });
+  const canvas = doc.createElement("canvas");
+  canvas.width = width * PNG_EXPORT_SCALE;
+  canvas.height = height * PNG_EXPORT_SCALE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("This window cannot render a canvas.");
+  ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
+  ctx.drawImage(image, 0, 0, width, height);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not create a PNG.")), "image/png");
+  });
 }
 async function copyLatexAsPng(doc, latex, mode) {
   var _a2;

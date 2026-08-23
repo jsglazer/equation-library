@@ -222,29 +222,31 @@ export async function renderLatexToPngBlob(doc: Document, latex: string, mode: I
 		`<style>${mathliveStyles}</style>${markup}</div>` +
 		`</foreignObject></svg>`;
 
-	const svgUrl = win.URL.createObjectURL(new win.Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-	try {
-		const image = new win.Image();
-		await new Promise<void>((resolve, reject) => {
-			image.onload = () => resolve();
-			image.onerror = () => reject(new Error("Could not rasterize the equation."));
-			image.src = svgUrl;
-		});
+	// The SVG reaches the image as a `data:` URL, never a `blob:` one. A
+	// blob-backed SVG is not origin-clean in Chromium, so drawing it taints the
+	// canvas and `toBlob` then fails with "Tainted canvases may not be
+	// exported". `encodeURIComponent` keeps the payload UTF-8 safe, which
+	// `btoa` would not.
+	const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
-		const canvas = doc.createElement("canvas");
-		canvas.width = width * PNG_EXPORT_SCALE;
-		canvas.height = height * PNG_EXPORT_SCALE;
-		const ctx = canvas.getContext("2d");
-		if (!ctx) throw new Error("This window cannot render a canvas.");
-		ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
-		ctx.drawImage(image, 0, 0, width, height);
+	const image = new win.Image();
+	await new Promise<void>((resolve, reject) => {
+		image.onload = () => resolve();
+		image.onerror = () => reject(new Error("Could not rasterize the equation."));
+		image.src = svgUrl;
+	});
 
-		return await new Promise<Blob>((resolve, reject) => {
-			canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not create a PNG."))), "image/png");
-		});
-	} finally {
-		win.URL.revokeObjectURL(svgUrl);
-	}
+	const canvas = doc.createElement("canvas");
+	canvas.width = width * PNG_EXPORT_SCALE;
+	canvas.height = height * PNG_EXPORT_SCALE;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("This window cannot render a canvas.");
+	ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
+	ctx.drawImage(image, 0, 0, width, height);
+
+	return await new Promise<Blob>((resolve, reject) => {
+		canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not create a PNG."))), "image/png");
+	});
 }
 
 /** Renders `latex` to a PNG and writes it to the system clipboard as an image. */
