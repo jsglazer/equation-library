@@ -34,6 +34,13 @@ Hold **shift** while clicking either insert button to get a block equation inste
 
 `$` signs are optional everywhere. Equations are stored bare, and the delimiters are added when you insert — which is why one saved equation serves both the inline and the block path. The one exception: inserting while the cursor already sits inside an open `$…$` or `$$…$$` span (from any insert button, a tile double-click, or the `$/` autocomplete below) drops the delimiters instead of nesting a redundant `$` inside your existing equation.
 
+"Already inside math" is judged the way Obsidian actually parses a note, so prose full of dollar signs does not silently swallow your delimiters:
+
+- Inline `$…$` is read one line at a time, because inline math cannot span a line break. A stray `$` earlier in the note has no effect on the line you are typing on.
+- `$$…$$` blocks *do* span lines and are tracked across the whole note.
+- Fenced code blocks and inline code spans are skipped — a `$ ` shell prompt or a Dataview `` `$=` `` query is not an equation.
+- `$100` is money and `$ x` is prose; neither opens math. A `$` typed right at the cursor does.
+
 ## Editor autocomplete
 
 Type `$/` anywhere in a note and a picker of your library opens; keep typing to filter it. Accepting a suggestion replaces the whole `$/query` span with the delimited equation (or bare LaTeX, if the trigger was typed inside an equation already open), so no trigger characters are left behind.
@@ -78,7 +85,7 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 146 unit tests over the pure core
+npm test        # 154 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
