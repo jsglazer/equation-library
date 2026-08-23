@@ -34,7 +34,8 @@ export type LogAction =
 	| "insert-at-cursor"
 	| "add-to-library"
 	| "add-and-insert"
-	| "autocomplete-accept";
+	| "autocomplete-accept"
+	| "update-equation";
 
 export interface LogEntry {
 	readonly ts: string;

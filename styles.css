@@ -154,6 +154,17 @@
 	min-width: 8rem;
 }
 
+.eqlib-mathfield-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.eqlib-mathfield-label {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
 .eqlib-mathfield-wrap {
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-m);
@@ -166,6 +177,7 @@
 	width: 100%;
 	font-size: var(--font-ui-large);
 	color: var(--text-normal);
+	cursor: default;
 }
 
 .eqlib-latex {

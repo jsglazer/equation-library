@@ -10,7 +10,7 @@ import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, Edito
 import { Equation } from "../core/types";
 import { EquationLibrarySettings, SUGGEST_LIMIT } from "../core/settings";
 import { matchSuggestions } from "../core/search";
-import { resolveInsertMode, wrapDelimiters } from "../core/latex";
+import { isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
 import { DismissalState, TriggerSite, decideTrigger, dismissalOnClose } from "../core/suggest";
 import { renderLatexInto } from "../ui/mathlive-adapter";
 
@@ -90,7 +90,10 @@ export class EquationSuggest extends EditorSuggest<Equation> {
 		if (!context) return;
 
 		const settings = this.deps.getSettings();
-		const inserted = wrapDelimiters(equation.latex, resolveInsertMode(settings.insertFormat, event.shiftKey));
+		const textBeforeTrigger = context.editor.getRange({ line: 0, ch: 0 }, context.start);
+		const inserted = isInsideMath(textBeforeTrigger)
+			? stripDelimiters(equation.latex)
+			: wrapDelimiters(equation.latex, resolveInsertMode(settings.insertFormat, event.shiftKey));
 
 		this.accepting = true;
 		try {

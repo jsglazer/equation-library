@@ -1,6 +1,6 @@
 {
 	"name": "equation-library",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Pop-up library of custom math formulas with a live LaTeX generator, editor autocomplete and a JSON catalog.",
 	"main": "main.js",
 	"scripts": {

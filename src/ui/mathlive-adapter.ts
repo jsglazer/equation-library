@@ -78,13 +78,27 @@ export function removeMathLiveStyles(): void {
 }
 
 /**
+ * MathLive defines `\ldots`, `\cdots`, `\ddots` and `\mathellipsis` as symbols
+ * but never `\dots` itself, even though it is standard amsmath LaTeX that
+ * Obsidian's own MathJax renderer accepts — so an equation using `\dots`
+ * displays fine in the note but renders as nothing here. Rewriting the bare
+ * command to `\ldots` before handing LaTeX to MathLive fixes the display
+ * without touching what is stored in the catalog or inserted into the note.
+ */
+function normalizeForMathLive(latex: string): string {
+	return latex.replace(/\\dots(?![a-zA-Z])/g, "\\ldots");
+}
+
+/**
  * Renders LaTeX to static markup. Incomplete or invalid LaTeX renders as
  * MathLive's own error markup rather than throwing, which is what lets a tile
  * or a preview show something useful while an equation is still being typed.
  */
 export function renderLatexToMarkup(latex: string, mode: InsertMode): string {
 	try {
-		return convertLatexToMarkup(latex, { defaultMode: mode === "block" ? "math" : "inline-math" });
+		return convertLatexToMarkup(normalizeForMathLive(latex), {
+			defaultMode: mode === "block" ? "math" : "inline-math",
+		});
 	} catch {
 		return "";
 	}
@@ -109,7 +123,7 @@ export function renderLatexInto(target: HTMLElement, latex: string, mode: Insert
 export interface MathFieldHandle {
 	/** The LaTeX currently in the field. */
 	getLatex(): string;
-	/** Replaces the field contents without firing the change callback. */
+	/** Replaces the field contents. */
 	setLatex(latex: string): void;
 	focus(): void;
 	/** Detaches listeners and removes the element. */
@@ -119,8 +133,12 @@ export interface MathFieldHandle {
 export interface MathFieldOptions {
 	readonly initialLatex: string;
 	readonly virtualKeyboard: boolean;
-	/** Fired on user edits only, never on a programmatic `setLatex`. */
-	readonly onInput: (latex: string) => void;
+	/**
+	 * When true the field renders LaTeX but rejects typing and pasting — it is
+	 * a live preview, not an editor. The LaTeX source textarea is the only way
+	 * to change the equation.
+	 */
+	readonly readOnly: boolean;
 }
 
 /**
@@ -138,30 +156,19 @@ export function createMathField(parent: HTMLElement, options: MathFieldOptions):
 	field.addClass("eqlib-mathfield");
 	field.mathVirtualKeyboardPolicy = options.virtualKeyboard ? "auto" : "manual";
 	field.smartMode = false;
-	field.value = options.initialLatex;
+	field.readOnly = options.readOnly;
+	field.value = normalizeForMathLive(options.initialLatex);
 	parent.appendChild(field);
-
-	let suppress = false;
-	const onInput = (): void => {
-		if (suppress) return;
-		options.onInput(field.getValue("latex"));
-	};
-	field.addEventListener("input", onInput);
 
 	return {
 		getLatex: () => field.getValue("latex"),
 		setLatex: (latex: string) => {
-			if (field.getValue("latex") === latex) return;
-			suppress = true;
-			try {
-				field.setValue(latex, { silenceNotifications: true });
-			} finally {
-				suppress = false;
-			}
+			const normalized = normalizeForMathLive(latex);
+			if (field.getValue("latex") === normalized) return;
+			field.setValue(normalized, { silenceNotifications: true });
 		},
 		focus: () => field.focus(),
 		destroy: () => {
-			field.removeEventListener("input", onInput);
 			field.remove();
 		},
 	};
@@ -170,4 +177,80 @@ export function createMathField(parent: HTMLElement, options: MathFieldOptions):
 /** Hides the on-screen math keyboard, if one is showing. */
 export function hideVirtualKeyboard(): void {
 	if (typeof window.mathVirtualKeyboard !== "undefined") window.mathVirtualKeyboard.hide();
+}
+
+/** Pixel scale for the rasterized PNG, so a copy still looks sharp when pasted larger. */
+const PNG_EXPORT_SCALE = 3;
+/** Breathing room around the glyphs, baked into both the measurement and the final image. */
+const PNG_EXPORT_PADDING = 8;
+
+/**
+ * Renders LaTeX to a PNG `Blob` by rasterizing MathLive's own markup.
+ *
+ * MathLive has no built-in image export, so this measures the markup's
+ * natural size in a hidden element, redraws it inside an SVG `foreignObject`
+ * (with the bundled stylesheet inlined, since a detached SVG document cannot
+ * see the host document's `<style>` tags), and rasterizes that through a
+ * canvas. The background is left transparent and the glyphs forced to black
+ * so the copied equation reads correctly once pasted, regardless of the
+ * paste destination's own background or Obsidian's active theme.
+ */
+export async function renderLatexToPngBlob(doc: Document, latex: string, mode: InsertMode): Promise<Blob> {
+	const markup = renderLatexToMarkup(latex, mode);
+	if (markup.length === 0) throw new Error("There is nothing to render.");
+
+	const win = doc.defaultView as (Window & typeof globalThis) | null;
+	if (!win) throw new Error("This equation's window is no longer open.");
+
+	ensureMathLiveStyles(doc);
+	const boxStyle = `display:inline-block;padding:${PNG_EXPORT_PADDING}px;color:#000;background:transparent;`;
+
+	const measure = doc.createElement("div");
+	measure.style.cssText = `position:fixed;left:-99999px;top:0;visibility:hidden;${boxStyle}`;
+	measure.innerHTML = markup;
+	doc.body.appendChild(measure);
+	if (doc.fonts) await doc.fonts.ready;
+	const rect = measure.getBoundingClientRect();
+	const width = Math.max(1, Math.ceil(rect.width));
+	const height = Math.max(1, Math.ceil(rect.height));
+	measure.remove();
+
+	const svg =
+		`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+		`<foreignObject width="100%" height="100%">` +
+		`<div xmlns="http://www.w3.org/1999/xhtml" style="${boxStyle}">` +
+		`<style>${mathliveStyles}</style>${markup}</div>` +
+		`</foreignObject></svg>`;
+
+	const svgUrl = win.URL.createObjectURL(new win.Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+	try {
+		const image = new win.Image();
+		await new Promise<void>((resolve, reject) => {
+			image.onload = () => resolve();
+			image.onerror = () => reject(new Error("Could not rasterize the equation."));
+			image.src = svgUrl;
+		});
+
+		const canvas = doc.createElement("canvas");
+		canvas.width = width * PNG_EXPORT_SCALE;
+		canvas.height = height * PNG_EXPORT_SCALE;
+		const ctx = canvas.getContext("2d");
+		if (!ctx) throw new Error("This window cannot render a canvas.");
+		ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
+		ctx.drawImage(image, 0, 0, width, height);
+
+		return await new Promise<Blob>((resolve, reject) => {
+			canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not create a PNG."))), "image/png");
+		});
+	} finally {
+		win.URL.revokeObjectURL(svgUrl);
+	}
+}
+
+/** Renders `latex` to a PNG and writes it to the system clipboard as an image. */
+export async function copyLatexAsPng(doc: Document, latex: string, mode: InsertMode): Promise<void> {
+	const win = doc.defaultView as (Window & typeof globalThis) | null;
+	if (!win?.navigator.clipboard?.write) throw new Error("This window cannot write images to the clipboard.");
+	const blob = await renderLatexToPngBlob(doc, latex, mode);
+	await win.navigator.clipboard.write([new win.ClipboardItem({ "image/png": blob })]);
 }

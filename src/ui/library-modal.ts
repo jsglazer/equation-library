@@ -9,7 +9,7 @@
 import { App, ButtonComponent, Editor, Menu, Modal, Notice, Setting } from "obsidian";
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
-import { InsertMode, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
+import { InsertMode, isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
 import { SortOrder, searchEquations } from "../core/search";
 import {
 	addCategory,
@@ -20,7 +20,13 @@ import {
 	renameCategory,
 	updateEquation,
 } from "../core/catalog";
-import { MathFieldHandle, createMathField, hideVirtualKeyboard, renderLatexInto } from "./mathlive-adapter";
+import {
+	MathFieldHandle,
+	copyLatexAsPng,
+	createMathField,
+	hideVirtualKeyboard,
+	renderLatexInto,
+} from "./mathlive-adapter";
 import { PromptModal } from "./prompt-modal";
 
 export interface LogRequest {
@@ -71,6 +77,9 @@ export class LibraryModal extends Modal {
 	private generatorCategory = UNCATEGORIZED;
 	private latex = "";
 	private insertButtons: ButtonComponent[] = [];
+	private updateButton: ButtonComponent | null = null;
+	/** The equation the generator is editing, or null when building a fresh one. */
+	private editingEquationId: string | null = null;
 
 	constructor(app: App, private readonly deps: LibraryModalDeps) {
 		super(app);
@@ -91,6 +100,7 @@ export class LibraryModal extends Modal {
 		this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
 		this.buildGenerator(contentEl);
 		this.buildFooter(contentEl);
+		this.latexInput.focus();
 
 		const win = contentEl.win as Window & typeof globalThis;
 		this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
@@ -108,6 +118,7 @@ export class LibraryModal extends Modal {
 		this.mathField?.destroy();
 		this.mathField = null;
 		this.insertButtons = [];
+		this.updateButton = null;
 		hideVirtualKeyboard();
 		this.contentEl.empty();
 	}
@@ -193,16 +204,22 @@ export class LibraryModal extends Modal {
 		});
 		this.generatorCategoryEl = categorySelect;
 
+		const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
+		fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
+		new ButtonComponent(fieldHeader)
+			.setIcon("image-down")
+			.setTooltip("Copy the rendered equation as a PNG")
+			.onClick(() => void this.onCopyPng());
+
 		const fieldWrap = panel.createDiv({ cls: "eqlib-mathfield-wrap" });
 		this.mathField = createMathField(fieldWrap, {
 			initialLatex: "",
 			// The on-screen math keyboard is for touch devices; on desktop the
 			// hardware keyboard is used and the keyboard panel is in the way.
 			virtualKeyboard: this.deps.isMobile,
-			onInput: (latex) => {
-				this.latex = latex;
-				this.latexInput.value = latex;
-			},
+			// The LaTeX source textarea is the only editable source of truth;
+			// this field only ever previews it.
+			readOnly: true,
 		});
 
 		this.latexInput = panel.createEl("textarea", { cls: "eqlib-latex" });
@@ -227,6 +244,12 @@ export class LibraryModal extends Modal {
 			.setButtonText("Add & Insert")
 			.onClick((event) => void this.onAddAndInsert(event));
 		this.insertButtons = [insertButton, addInsertButton];
+
+		this.updateButton = new ButtonComponent(buttons)
+			.setButtonText("Update")
+			.setTooltip("Save these changes back to the equation loaded from the library.")
+			.onClick(() => void this.onUpdateEquation());
+		this.updateButton.buttonEl.hide();
 
 		// "Add to Library" stays available with no editor open; the two insert
 		// actions cannot work without one and say so.
@@ -360,6 +383,8 @@ export class LibraryModal extends Modal {
 		this.nameInput.value = equation.name;
 		this.generatorCategory = equation.category;
 		this.generatorCategoryEl.value = equation.category;
+		this.editingEquationId = equation.id;
+		this.updateButton?.buttonEl.show();
 	}
 
 	private currentLatex(): string {
@@ -370,12 +395,21 @@ export class LibraryModal extends Modal {
 		return resolveInsertMode(this.deps.getSettings().insertFormat, event?.shiftKey === true);
 	}
 
+	/**
+	 * Inserting inside a `$...$` or `$$...$$` span already open at the cursor
+	 * drops the delimiters — adding another pair would either break the
+	 * existing equation or start a nested one.
+	 */
 	private insertIntoEditor(latex: string, event: MouseEvent | undefined): boolean {
 		if (!this.editor) {
 			new Notice("Open a markdown note first — there is nowhere to insert.");
 			return false;
 		}
-		this.editor.replaceSelection(wrapDelimiters(latex, this.insertMode(event)));
+		const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
+		const insertText = isInsideMath(textBeforeCursor)
+			? stripDelimiters(latex)
+			: wrapDelimiters(latex, this.insertMode(event));
+		this.editor.replaceSelection(insertText);
 		return true;
 	}
 
@@ -403,6 +437,20 @@ export class LibraryModal extends Modal {
 			category: equation.category,
 		});
 		this.finishInsert();
+	}
+
+	private async onCopyPng(): Promise<void> {
+		const latex = this.currentLatex();
+		if (latex.length === 0) {
+			new Notice("Nothing to copy — the generator is empty.");
+			return;
+		}
+		try {
+			await copyLatexAsPng(this.contentEl.ownerDocument, latex, "block");
+			new Notice("Copied the equation as a PNG.");
+		} catch (error) {
+			new Notice(`Could not copy the equation as a PNG: ${String(error)}`);
+		}
 	}
 
 	private async addCurrentEquation(): Promise<Equation | null> {
@@ -456,6 +504,32 @@ export class LibraryModal extends Modal {
 			category: added.category,
 		});
 		this.finishInsert();
+	}
+
+	private async onUpdateEquation(): Promise<void> {
+		const id = this.editingEquationId;
+		if (!id) return;
+		const latex = this.currentLatex();
+		if (latex.length === 0) {
+			new Notice("Nothing to save — the generator is empty.");
+			return;
+		}
+		const name = this.nameInput.value.trim();
+		if (name.length === 0) {
+			new Notice("Give the equation a name before updating it.");
+			this.nameInput.focus();
+			return;
+		}
+		const result = updateEquation(this.catalog, id, { name, latex, category: this.generatorCategory }, this.deps.now());
+		if (!result.ok) {
+			new Notice(result.error);
+			return;
+		}
+		await this.commit(result.value);
+		new Notice(`Updated "${name}".`);
+		this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
+		this.editingEquationId = null;
+		this.updateButton?.buttonEl.hide();
 	}
 
 	// ------------------------------------------------------------ catalogue

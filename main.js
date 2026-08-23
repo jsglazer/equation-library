@@ -46,6 +46,21 @@ function resolveInsertMode(format, shiftKey) {
   if (format === "always-block") return "block";
   return shiftKey ? "block" : "inline";
 }
+function isInsideMath(textBeforePosition) {
+  const text = textBeforePosition.replace(/\\\$/g, "  ");
+  let blockOpen = false;
+  let inlineOpen = false;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "$") continue;
+    if (text[i + 1] === "$") {
+      blockOpen = !blockOpen;
+      i += 1;
+      continue;
+    }
+    if (!blockOpen) inlineOpen = !inlineOpen;
+  }
+  return blockOpen || inlineOpen;
+}
 
 // src/core/log.ts
 var LOG_CAPS = [100, 500, 1e3, "off"];
@@ -16555,9 +16570,14 @@ function removeMathLiveStyles() {
   for (const style of injectedStyles) style.remove();
   injectedStyles.clear();
 }
+function normalizeForMathLive(latex) {
+  return latex.replace(/\\dots(?![a-zA-Z])/g, "\\ldots");
+}
 function renderLatexToMarkup(latex, mode) {
   try {
-    return he(latex, { defaultMode: mode === "block" ? "math" : "inline-math" });
+    return he(normalizeForMathLive(latex), {
+      defaultMode: mode === "block" ? "math" : "inline-math"
+    });
   } catch (e) {
     return "";
   }
@@ -16578,34 +16598,72 @@ function createMathField(parent, options) {
   field.addClass("eqlib-mathfield");
   field.mathVirtualKeyboardPolicy = options.virtualKeyboard ? "auto" : "manual";
   field.smartMode = false;
-  field.value = options.initialLatex;
+  field.readOnly = options.readOnly;
+  field.value = normalizeForMathLive(options.initialLatex);
   parent.appendChild(field);
-  let suppress = false;
-  const onInput = () => {
-    if (suppress) return;
-    options.onInput(field.getValue("latex"));
-  };
-  field.addEventListener("input", onInput);
   return {
     getLatex: () => field.getValue("latex"),
     setLatex: (latex) => {
-      if (field.getValue("latex") === latex) return;
-      suppress = true;
-      try {
-        field.setValue(latex, { silenceNotifications: true });
-      } finally {
-        suppress = false;
-      }
+      const normalized = normalizeForMathLive(latex);
+      if (field.getValue("latex") === normalized) return;
+      field.setValue(normalized, { silenceNotifications: true });
     },
     focus: () => field.focus(),
     destroy: () => {
-      field.removeEventListener("input", onInput);
       field.remove();
     }
   };
 }
 function hideVirtualKeyboard() {
   if (typeof window.mathVirtualKeyboard !== "undefined") window.mathVirtualKeyboard.hide();
+}
+var PNG_EXPORT_SCALE = 3;
+var PNG_EXPORT_PADDING = 8;
+async function renderLatexToPngBlob(doc, latex, mode) {
+  const markup = renderLatexToMarkup(latex, mode);
+  if (markup.length === 0) throw new Error("There is nothing to render.");
+  const win = doc.defaultView;
+  if (!win) throw new Error("This equation's window is no longer open.");
+  ensureMathLiveStyles(doc);
+  const boxStyle = `display:inline-block;padding:${PNG_EXPORT_PADDING}px;color:#000;background:transparent;`;
+  const measure = doc.createElement("div");
+  measure.style.cssText = `position:fixed;left:-99999px;top:0;visibility:hidden;${boxStyle}`;
+  measure.innerHTML = markup;
+  doc.body.appendChild(measure);
+  if (doc.fonts) await doc.fonts.ready;
+  const rect = measure.getBoundingClientRect();
+  const width = Math.max(1, Math.ceil(rect.width));
+  const height = Math.max(1, Math.ceil(rect.height));
+  measure.remove();
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="${boxStyle}"><style>${mathlive_bundled_default}</style>${markup}</div></foreignObject></svg>`;
+  const svgUrl = win.URL.createObjectURL(new win.Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = new win.Image();
+    await new Promise((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Could not rasterize the equation."));
+      image.src = svgUrl;
+    });
+    const canvas = doc.createElement("canvas");
+    canvas.width = width * PNG_EXPORT_SCALE;
+    canvas.height = height * PNG_EXPORT_SCALE;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("This window cannot render a canvas.");
+    ctx.scale(PNG_EXPORT_SCALE, PNG_EXPORT_SCALE);
+    ctx.drawImage(image, 0, 0, width, height);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not create a PNG.")), "image/png");
+    });
+  } finally {
+    win.URL.revokeObjectURL(svgUrl);
+  }
+}
+async function copyLatexAsPng(doc, latex, mode) {
+  var _a2;
+  const win = doc.defaultView;
+  if (!((_a2 = win == null ? void 0 : win.navigator.clipboard) == null ? void 0 : _a2.write)) throw new Error("This window cannot write images to the clipboard.");
+  const blob = await renderLatexToPngBlob(doc, latex, mode);
+  await win.navigator.clipboard.write([new win.ClipboardItem({ "image/png": blob })]);
 }
 
 // src/editor/equation-suggest.ts
@@ -16670,7 +16728,8 @@ var EquationSuggest = class extends import_obsidian2.EditorSuggest {
     const context = this.context;
     if (!context) return;
     const settings = this.deps.getSettings();
-    const inserted = wrapDelimiters(equation.latex, resolveInsertMode(settings.insertFormat, event.shiftKey));
+    const textBeforeTrigger = context.editor.getRange({ line: 0, ch: 0 }, context.start);
+    const inserted = isInsideMath(textBeforeTrigger) ? stripDelimiters(equation.latex) : wrapDelimiters(equation.latex, resolveInsertMode(settings.insertFormat, event.shiftKey));
     this.accepting = true;
     try {
       context.editor.replaceRange(inserted, context.start, context.end);
@@ -16763,6 +16822,9 @@ var LibraryModal = class extends import_obsidian4.Modal {
     this.generatorCategory = UNCATEGORIZED;
     this.latex = "";
     this.insertButtons = [];
+    this.updateButton = null;
+    /** The equation the generator is editing, or null when building a fresh one. */
+    this.editingEquationId = null;
     const settings = deps.getSettings();
     this.category = settings.lastCategory;
     this.sort = settings.sortOrder;
@@ -16778,6 +16840,7 @@ var LibraryModal = class extends import_obsidian4.Modal {
     this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
     this.buildGenerator(contentEl);
     this.buildFooter(contentEl);
+    this.latexInput.focus();
     const win = contentEl.win;
     this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
       root: this.scrollEl,
@@ -16793,6 +16856,7 @@ var LibraryModal = class extends import_obsidian4.Modal {
     (_b2 = this.mathField) == null ? void 0 : _b2.destroy();
     this.mathField = null;
     this.insertButtons = [];
+    this.updateButton = null;
     hideVirtualKeyboard();
     this.contentEl.empty();
   }
@@ -16858,16 +16922,18 @@ var LibraryModal = class extends import_obsidian4.Modal {
       this.generatorCategory = categorySelect.value;
     });
     this.generatorCategoryEl = categorySelect;
+    const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
+    fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
+    new import_obsidian4.ButtonComponent(fieldHeader).setIcon("image-down").setTooltip("Copy the rendered equation as a PNG").onClick(() => void this.onCopyPng());
     const fieldWrap = panel.createDiv({ cls: "eqlib-mathfield-wrap" });
     this.mathField = createMathField(fieldWrap, {
       initialLatex: "",
       // The on-screen math keyboard is for touch devices; on desktop the
       // hardware keyboard is used and the keyboard panel is in the way.
       virtualKeyboard: this.deps.isMobile,
-      onInput: (latex) => {
-        this.latex = latex;
-        this.latexInput.value = latex;
-      }
+      // The LaTeX source textarea is the only editable source of truth;
+      // this field only ever previews it.
+      readOnly: true
     });
     this.latexInput = panel.createEl("textarea", { cls: "eqlib-latex" });
     this.latexInput.placeholder = "LaTeX source \u2014 $ signs optional";
@@ -16883,6 +16949,8 @@ var LibraryModal = class extends import_obsidian4.Modal {
     const addButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Add to Library").onClick(() => void this.onAddToLibrary());
     const addInsertButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Add & Insert").onClick((event) => void this.onAddAndInsert(event));
     this.insertButtons = [insertButton, addInsertButton];
+    this.updateButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Update").setTooltip("Save these changes back to the equation loaded from the library.").onClick(() => void this.onUpdateEquation());
+    this.updateButton.buttonEl.hide();
     if (this.editor === null) {
       for (const button of this.insertButtons) {
         button.setDisabled(true);
@@ -16986,13 +17054,15 @@ var LibraryModal = class extends import_obsidian4.Modal {
   }
   // -------------------------------------------------------------- actions
   loadIntoGenerator(equation) {
-    var _a2;
+    var _a2, _b2;
     this.latex = equation.latex;
     this.latexInput.value = equation.latex;
     (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(equation.latex);
     this.nameInput.value = equation.name;
     this.generatorCategory = equation.category;
     this.generatorCategoryEl.value = equation.category;
+    this.editingEquationId = equation.id;
+    (_b2 = this.updateButton) == null ? void 0 : _b2.buttonEl.show();
   }
   currentLatex() {
     return stripDelimiters(this.latex.length > 0 ? this.latex : this.latexInput.value);
@@ -17000,12 +17070,19 @@ var LibraryModal = class extends import_obsidian4.Modal {
   insertMode(event) {
     return resolveInsertMode(this.deps.getSettings().insertFormat, (event == null ? void 0 : event.shiftKey) === true);
   }
+  /**
+   * Inserting inside a `$...$` or `$$...$$` span already open at the cursor
+   * drops the delimiters — adding another pair would either break the
+   * existing equation or start a nested one.
+   */
   insertIntoEditor(latex, event) {
     if (!this.editor) {
       new import_obsidian4.Notice("Open a markdown note first \u2014 there is nowhere to insert.");
       return false;
     }
-    this.editor.replaceSelection(wrapDelimiters(latex, this.insertMode(event)));
+    const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
+    const insertText = isInsideMath(textBeforeCursor) ? stripDelimiters(latex) : wrapDelimiters(latex, this.insertMode(event));
+    this.editor.replaceSelection(insertText);
     return true;
   }
   finishInsert() {
@@ -17030,6 +17107,19 @@ var LibraryModal = class extends import_obsidian4.Modal {
       category: equation.category
     });
     this.finishInsert();
+  }
+  async onCopyPng() {
+    const latex = this.currentLatex();
+    if (latex.length === 0) {
+      new import_obsidian4.Notice("Nothing to copy \u2014 the generator is empty.");
+      return;
+    }
+    try {
+      await copyLatexAsPng(this.contentEl.ownerDocument, latex, "block");
+      new import_obsidian4.Notice("Copied the equation as a PNG.");
+    } catch (error) {
+      new import_obsidian4.Notice(`Could not copy the equation as a PNG: ${String(error)}`);
+    }
   }
   async addCurrentEquation() {
     const latex = this.currentLatex();
@@ -17080,6 +17170,32 @@ var LibraryModal = class extends import_obsidian4.Modal {
       category: added.category
     });
     this.finishInsert();
+  }
+  async onUpdateEquation() {
+    var _a2;
+    const id2 = this.editingEquationId;
+    if (!id2) return;
+    const latex = this.currentLatex();
+    if (latex.length === 0) {
+      new import_obsidian4.Notice("Nothing to save \u2014 the generator is empty.");
+      return;
+    }
+    const name = this.nameInput.value.trim();
+    if (name.length === 0) {
+      new import_obsidian4.Notice("Give the equation a name before updating it.");
+      this.nameInput.focus();
+      return;
+    }
+    const result = updateEquation(this.catalog, id2, { name, latex, category: this.generatorCategory }, this.deps.now());
+    if (!result.ok) {
+      new import_obsidian4.Notice(result.error);
+      return;
+    }
+    await this.commit(result.value);
+    new import_obsidian4.Notice(`Updated "${name}".`);
+    this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
+    this.editingEquationId = null;
+    (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.hide();
   }
   // ------------------------------------------------------------ catalogue
   showTileMenu(equation, event) {

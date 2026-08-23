@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveInsertMode, stripDelimiters, wrapDelimiters } from "../src/core/latex";
+import { isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../src/core/latex";
 
 describe("stripDelimiters", () => {
 	it("strips one matched inline pair", () => {
@@ -64,5 +64,42 @@ describe("resolveInsertMode", () => {
 	it("always uses block when the setting says so", () => {
 		expect(resolveInsertMode("always-block", false)).toBe("block");
 		expect(resolveInsertMode("always-block", true)).toBe("block");
+	});
+});
+
+describe("isInsideMath", () => {
+	it("is false with no dollars at all", () => {
+		expect(isInsideMath("plain text")).toBe(false);
+	});
+
+	it("is true right after an unclosed inline delimiter", () => {
+		expect(isInsideMath("some text $x^2")).toBe(true);
+	});
+
+	it("is false once an inline pair has closed", () => {
+		expect(isInsideMath("$x^2$ and ")).toBe(false);
+	});
+
+	it("is true right after an unclosed block delimiter", () => {
+		expect(isInsideMath("some text $$x^2")).toBe(true);
+	});
+
+	it("is false once a block pair has closed", () => {
+		expect(isInsideMath("$$x^2$$ and ")).toBe(false);
+	});
+
+	it("does not mistake a block delimiter for two inline ones", () => {
+		expect(isInsideMath("$$x^2")).toBe(true);
+		expect(isInsideMath("$$")).toBe(true);
+	});
+
+	it("ignores escaped dollar signs", () => {
+		expect(isInsideMath("price: \\$5, still text")).toBe(false);
+		expect(isInsideMath("\\$5 and $x^2")).toBe(true);
+	});
+
+	it("handles multiple equations on the way to the cursor", () => {
+		expect(isInsideMath("$a$ + $b$ + text")).toBe(false);
+		expect(isInsideMath("$a$ + $b^2")).toBe(true);
 	});
 });

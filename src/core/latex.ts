@@ -50,3 +50,28 @@ export function resolveInsertMode(format: InsertFormat, shiftKey: boolean): Inse
 	if (format === "always-block") return "block";
 	return shiftKey ? "block" : "inline";
 }
+
+/**
+ * Whether a position sits inside an already-open `$...$` or `$$...$$` span.
+ *
+ * `textBeforePosition` is everything in the document from its start up to the
+ * position being tested — the same "scan from the top" approach the code
+ * suggester uses for fenced code blocks. An escaped `\$` never toggles state.
+ * `$$` is checked before a lone `$` so a block delimiter is never mistaken for
+ * two inline ones.
+ */
+export function isInsideMath(textBeforePosition: string): boolean {
+	const text = textBeforePosition.replace(/\\\$/g, "  ");
+	let blockOpen = false;
+	let inlineOpen = false;
+	for (let i = 0; i < text.length; i += 1) {
+		if (text[i] !== "$") continue;
+		if (text[i + 1] === "$") {
+			blockOpen = !blockOpen;
+			i += 1;
+			continue;
+		}
+		if (!blockOpen) inlineOpen = !inlineOpen;
+	}
+	return blockOpen || inlineOpen;
+}

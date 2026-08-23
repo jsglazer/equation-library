@@ -1,7 +1,7 @@
 {
 	"id": "equation-library",
 	"name": "Equation Library",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "1.5.12",
 	"description": "A pop-up library of custom math formulas with a live WYSIWYG LaTeX generator, editor autocomplete and a JSON catalog.",
 	"author": "Josh Glazer",
