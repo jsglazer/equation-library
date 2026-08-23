@@ -14,28 +14,29 @@ Run **Show Equation Library** from the command palette, or click the sigma icon 
 
 | Action | Result |
 | --- | --- |
-| Click a tile | Loads the equation into the generator, rendered and as LaTeX source |
+| Click a tile | Loads the equation into the generator for editing, and reveals an **Update** button to save changes back to it |
 | Double-click a tile | Inserts it at the cursor as inline math, `$…$` |
 | Shift + double-click | Inserts it as a block equation, `$$…$$` |
 | Right-click a tile | Rename, move to another category, or delete |
 
 Search, filter by category and sort by name, newest or recently changed from the toolbar. The three buttons on the right create, rename and delete categories.
 
-**Bottom panel — the generator.** A live math field where structure appears as you type: `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace. Beneath it is a plain LaTeX source box, and the two are bound in both directions — edit either one and the other follows.
+**Bottom panel — the generator.** The cursor starts in the plain LaTeX source box, which is the only editable field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. Next to the preview, a **Copy PNG** button rasterizes the current equation and puts it on the clipboard as an image.
 
 | Button | Result |
 | --- | --- |
 | Insert at cursor | Inserts what is in the generator into the active note |
 | Add to Library | Saves it as a new equation under the chosen name and category |
 | Add & Insert | Both, in that order |
+| Update *(after clicking a tile)* | Saves the generator's current name, LaTeX and category back to that same equation, in place |
 
 Hold **shift** while clicking either insert button to get a block equation instead of inline. **Close after inserting** is a toggle in the bottom-left of the popup, and the plugin version sits in the bottom-right.
 
-`$` signs are optional everywhere. Equations are stored bare, and the delimiters are added when you insert — which is why one saved equation serves both the inline and the block path.
+`$` signs are optional everywhere. Equations are stored bare, and the delimiters are added when you insert — which is why one saved equation serves both the inline and the block path. The one exception: inserting while the cursor already sits inside an open `$…$` or `$$…$$` span (from any insert button, a tile double-click, or the `$/` autocomplete below) drops the delimiters instead of nesting a redundant `$` inside your existing equation.
 
 ## Editor autocomplete
 
-Type `$/` anywhere in a note and a picker of your library opens; keep typing to filter it. Accepting a suggestion replaces the whole `$/query` span with the fully delimited equation, so no trigger characters are left behind.
+Type `$/` anywhere in a note and a picker of your library opens; keep typing to filter it. Accepting a suggestion replaces the whole `$/query` span with the delimited equation (or bare LaTeX, if the trigger was typed inside an equation already open), so no trigger characters are left behind.
 
 - A bare `$` **never** opens the picker. Ordinary inline math typing is completely untouched.
 - The picker does not open inside a fenced code block or an inline code span.
@@ -53,7 +54,7 @@ Three files, all inside the plugin's own folder — nothing is added to your vau
 | `equations.json` | The equation catalog |
 | `equation-log.jsonl` | One line per committed action |
 
-The log records inserts, library additions and accepted autocompletions — never keystrokes or drafts you did not use. It is capped (100, 500 or 1000 entries, or no limit; 500 by default) and the oldest entries are dropped first, which keeps memory use predictable on mobile.
+The log records inserts, library additions, in-place updates and accepted autocompletions — never keystrokes or drafts you did not use. It is capped (100, 500 or 1000 entries, or no limit; 500 by default) and the oldest entries are dropped first, which keeps memory use predictable on mobile.
 
 Those files live in a hidden folder that Obsidian will not open in a tab, so the settings panel has **View JSON** and **View log** buttons that show their contents in a scrollable, read-only window with a copy button.
 
@@ -77,7 +78,7 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 138 unit tests over the pure core
+npm test        # 146 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
