@@ -1,0 +1,21 @@
+{
+	"compilerOptions": {
+		"inlineSourceMap": true,
+		"inlineSources": true,
+		"module": "ESNext",
+		"target": "ES2018",
+		"allowSyntheticDefaultImports": true,
+		"importHelpers": true,
+		"isolatedModules": true,
+		"strict": true,
+		"noImplicitAny": true,
+		"noUnusedLocals": true,
+		"skipLibCheck": true,
+		"lib": ["ES2020", "DOM"],
+		"moduleResolution": "bundler",
+		"paths": {
+			"obsidian": ["./node_modules/obsidian/obsidian.d.ts"]
+		}
+	},
+	"include": ["src/**/*.ts", "src/**/*.d.ts", "tests/**/*.ts"]
+}

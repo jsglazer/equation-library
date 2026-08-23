@@ -1,0 +1,271 @@
+/*
+ * Equation Library.
+ *
+ * Every colour is an Obsidian CSS variable, so the plugin follows the active
+ * theme in light and dark mode without a second stylesheet. There are no hex
+ * literals in this file by design.
+ *
+ * The MathLive stylesheet is not here: it ships inside main.js with its fonts
+ * inlined and is injected at runtime, because Obsidian installs only main.js,
+ * manifest.json and this file.
+ */
+
+/* ------------------------------------------------------------ the popup */
+
+.eqlib-modal {
+	width: min(46rem, 92vw);
+	max-width: 92vw;
+}
+
+.eqlib-content {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+	max-height: 78vh;
+}
+
+.eqlib-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.eqlib-search {
+	flex: 1 1 12rem;
+	min-width: 8rem;
+}
+
+.eqlib-toolbar-actions {
+	display: flex;
+	gap: var(--size-4-1);
+	margin-left: auto;
+}
+
+/* -------------------------------------------------------- the tile grid */
+
+.eqlib-grid-scroll {
+	flex: 1 1 auto;
+	min-height: 8rem;
+	overflow-y: auto;
+	overflow-x: hidden;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2);
+}
+
+.eqlib-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+	gap: var(--size-4-2);
+}
+
+/*
+ * Tiles are all the same size: a fixed aspect ratio with the formula scaled
+ * down inside it, so one oversized equation never stretches the grid.
+ */
+.eqlib-tile {
+	display: flex;
+	flex-direction: column;
+	aspect-ratio: 4 / 3;
+	overflow: hidden;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-secondary);
+	cursor: pointer;
+	user-select: none;
+}
+
+.eqlib-tile:hover {
+	background-color: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover);
+}
+
+.eqlib-tile-body {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	min-height: 0;
+	color: var(--text-normal);
+	font-size: var(--font-ui-medium);
+}
+
+/* Scale an oversized formula down rather than letting it escape the tile. */
+.eqlib-tile-body > * {
+	max-width: 100%;
+	max-height: 100%;
+	overflow: hidden;
+}
+
+.eqlib-tile-placeholder {
+	width: 60%;
+	height: 1rem;
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-border);
+}
+
+.eqlib-tile-label {
+	flex: 0 0 auto;
+	margin-top: var(--size-4-1);
+	text-align: center;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.eqlib-empty {
+	grid-column: 1 / -1;
+	padding: var(--size-4-4);
+	text-align: center;
+	color: var(--text-muted);
+}
+
+/* -------------------------------------------------------- the generator */
+
+.eqlib-generator {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	padding-top: var(--size-4-2);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.eqlib-panel-title {
+	margin: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.eqlib-generator-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.eqlib-name {
+	flex: 1 1 12rem;
+	min-width: 8rem;
+}
+
+.eqlib-mathfield-wrap {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	padding: var(--size-4-2);
+}
+
+.eqlib-mathfield {
+	display: block;
+	width: 100%;
+	font-size: var(--font-ui-large);
+	color: var(--text-normal);
+}
+
+.eqlib-latex {
+	width: 100%;
+	min-height: 4rem;
+	resize: vertical;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	background-color: var(--background-primary);
+}
+
+.eqlib-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+/* ------------------------------------------------------------- the foot */
+
+.eqlib-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+}
+
+.eqlib-footer .eqlib-close-setting {
+	flex: 1 1 auto;
+	border-top: none;
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+.eqlib-version {
+	flex: 0 0 auto;
+	align-self: flex-end;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+/* ------------------------------------------------ the file view / import */
+
+.eqlib-view-modal {
+	width: min(46rem, 92vw);
+}
+
+.eqlib-file-path {
+	margin-top: 0;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	overflow-wrap: anywhere;
+}
+
+.eqlib-file-view {
+	width: 100%;
+	height: 24rem;
+	resize: vertical;
+	overflow: auto;
+	white-space: pre;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	background-color: var(--background-primary-alt);
+}
+
+.eqlib-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+/* --------------------------------------------- the autocomplete popover */
+
+.eqlib-suggestion {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-3);
+}
+
+.eqlib-suggestion-preview {
+	flex: 0 0 auto;
+	max-width: 40%;
+	overflow: hidden;
+	color: var(--text-normal);
+}
+
+.eqlib-suggestion-meta {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.eqlib-suggestion-name {
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.eqlib-suggestion-category {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
