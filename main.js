@@ -85,6 +85,73 @@ function isInsideMath(textBeforePosition) {
   }
   return blockOpen || inlineOpen;
 }
+function makeSpan(text, start, end, mode) {
+  const latex = stripDelimiters(text.slice(start, end));
+  return latex.length === 0 ? null : { start, end, mode, latex };
+}
+function scanMathSpans(text) {
+  const spans = [];
+  const lines = text.split("\n");
+  let fence = null;
+  let blockStart = -1;
+  let offset = 0;
+  for (const line of lines) {
+    const fenceMatch = FENCE.exec(line);
+    if (fenceMatch !== null && blockStart < 0) {
+      const marker = fenceMatch[1][0];
+      fence = fence === null ? marker : fence === marker ? null : fence;
+      offset += line.length + 1;
+      continue;
+    }
+    if (fence !== null) {
+      offset += line.length + 1;
+      continue;
+    }
+    let inlineStart = -1;
+    let inCode = false;
+    for (let i = 0; i < line.length; i += 1) {
+      if (line[i] === "\\") {
+        i += 1;
+        continue;
+      }
+      if (blockStart < 0 && line[i] === "`") {
+        while (line[i + 1] === "`") i += 1;
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode || line[i] !== "$") continue;
+      const at2 = offset + i;
+      if (line[i + 1] === "$") {
+        if (blockStart >= 0) {
+          const span = makeSpan(text, blockStart, at2 + 2, "block");
+          if (span) spans.push(span);
+          blockStart = -1;
+        } else {
+          blockStart = at2;
+          inlineStart = -1;
+        }
+        i += 1;
+        continue;
+      }
+      if (blockStart >= 0) continue;
+      if (inlineStart >= 0) {
+        const span = makeSpan(text, inlineStart, at2 + 1, "inline");
+        if (span) spans.push(span);
+        inlineStart = -1;
+      } else if (opensInline(line[i + 1])) {
+        inlineStart = at2;
+      }
+    }
+    offset += line.length + 1;
+  }
+  return spans;
+}
+function findMathSpanAt(text, offset) {
+  for (const span of scanMathSpans(text)) {
+    if (offset >= span.start && offset <= span.end) return span;
+  }
+  return null;
+}
 
 // src/core/log.ts
 var LOG_CAPS = [100, 500, 1e3, "off"];
@@ -196,6 +263,7 @@ function decideTrigger(context, trigger, flags, state) {
 }
 
 // src/core/settings.ts
+var DEFAULT_CATALOG_PATH = "Equation Library/equations.json";
 var DEFAULT_SETTINGS = {
   closeOnInsert: true,
   insertFormat: "inline",
@@ -203,10 +271,19 @@ var DEFAULT_SETTINGS = {
   suggestTrigger: DEFAULT_TRIGGER,
   logCap: DEFAULT_LOG_CAP,
   sortOrder: "name",
-  lastCategory: null
+  lastCategory: null,
+  catalogLocation: "vault",
+  catalogPath: DEFAULT_CATALOG_PATH
 };
 var SORT_ORDERS = ["name", "created", "modified"];
 var INSERT_FORMATS = ["inline", "always-block"];
+var CATALOG_LOCATIONS = ["vault", "plugin"];
+function normalizeCatalogPath(raw) {
+  if (typeof raw !== "string") return DEFAULT_CATALOG_PATH;
+  const path = raw.trim().replace(/^\/+/, "");
+  if (path.length === 0 || path.split("/").includes("..")) return DEFAULT_CATALOG_PATH;
+  return path;
+}
 function pickBoolean(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -225,7 +302,9 @@ function normalizeSettings(raw) {
     suggestTrigger: trigger.length > 0 ? trigger : DEFAULT_SETTINGS.suggestTrigger,
     logCap: pickFrom(record.logCap, LOG_CAPS, DEFAULT_SETTINGS.logCap),
     sortOrder: pickFrom(record.sortOrder, SORT_ORDERS, DEFAULT_SETTINGS.sortOrder),
-    lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0 ? record.lastCategory : null
+    lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0 ? record.lastCategory : null,
+    catalogLocation: pickFrom(record.catalogLocation, CATALOG_LOCATIONS, DEFAULT_SETTINGS.catalogLocation),
+    catalogPath: normalizeCatalogPath(record.catalogPath)
   };
 }
 var SUGGEST_LIMIT = 20;
@@ -482,10 +561,20 @@ var PluginStore = class {
   constructor(adapter, configDir, manifestId) {
     this.adapter = adapter;
     this.queue = Promise.resolve();
+    /** Where the catalog is read and written; retargeted from the settings. */
+    this.target = { location: "plugin", vaultPath: "" };
     this.dir = (0, import_obsidian.normalizePath)(`${configDir}/plugins/${manifestId}`);
   }
-  get catalogPath() {
+  /** Points the catalog at the location the settings ask for. */
+  setCatalogTarget(target) {
+    this.target = target;
+  }
+  /** The original location, under the plugin's own folder. */
+  get pluginCatalogPath() {
     return (0, import_obsidian.normalizePath)(`${this.dir}/${CATALOG_FILE}`);
+  }
+  get catalogPath() {
+    return this.target.location === "vault" && this.target.vaultPath.length > 0 ? (0, import_obsidian.normalizePath)(this.target.vaultPath) : this.pluginCatalogPath;
   }
   get logPath() {
     return (0, import_obsidian.normalizePath)(`${this.dir}/${LOG_FILE}`);
@@ -503,8 +592,44 @@ var PluginStore = class {
     return await this.adapter.exists(path) ? await this.adapter.read(path) : null;
   }
   async writeFile(path, contents) {
-    if (!await this.adapter.exists(this.dir)) await this.adapter.mkdir(this.dir);
+    await this.ensureParent(path);
     await this.adapter.write(path, contents);
+  }
+  /**
+   * Creates the folder a file is about to be written into.
+   *
+   * A vault-relative catalog can sit any number of folders deep, and the
+   * adapter will not create intermediate folders on its own, so every missing
+   * ancestor is made in turn.
+   */
+  async ensureParent(path) {
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    if (parent.length === 0) return;
+    const segments = parent.split("/");
+    for (let i = 0; i < segments.length; i += 1) {
+      const folder = segments.slice(0, i + 1).join("/");
+      if (!await this.adapter.exists(folder)) await this.adapter.mkdir(folder);
+    }
+  }
+  /**
+   * Copies the catalog from the plugin folder to the configured location the
+   * first time that location is used, so an existing library is not lost when
+   * the storage setting changes (or defaults to `vault` on upgrade).
+   *
+   * The original is left in place as a backup — nothing reads it once the
+   * target has moved.
+   */
+  async migrateCatalogToTarget() {
+    return this.enqueue(async () => {
+      const destination = this.catalogPath;
+      if (destination === this.pluginCatalogPath) return null;
+      if (await this.adapter.exists(destination)) return null;
+      const source = await this.readIfPresent(this.pluginCatalogPath);
+      if (source === null) return null;
+      await this.ensureParent(destination);
+      await this.adapter.write(destination, source);
+      return destination;
+    });
   }
   /** Reads the catalog from disk, repairing anything unreadable in memory. */
   async loadCatalog() {
@@ -568,8 +693,7 @@ var PluginStore = class {
   async writeVaultFile(vaultPath, contents) {
     return this.enqueue(async () => {
       const path = (0, import_obsidian.normalizePath)(vaultPath);
-      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      if (parent.length > 0 && !await this.adapter.exists(parent)) await this.adapter.mkdir(parent);
+      await this.ensureParent(path);
       await this.adapter.write(path, contents);
       return path;
     });
@@ -16845,6 +16969,14 @@ var LibraryModal = class extends import_obsidian4.Modal {
     this.updateButton = null;
     /** The equation the generator is editing, or null when building a fresh one. */
     this.editingEquationId = null;
+    /**
+     * The document span an insert should overwrite, taken from the prefill.
+     *
+     * Cleared after the first insert: the positions describe the document as it
+     * was when the modal opened, and rewriting the span invalidates them.
+     */
+    this.replaceRange = null;
+    this.replaceMode = "inline";
     const settings = deps.getSettings();
     this.category = settings.lastCategory;
     this.sort = settings.sortOrder;
@@ -16998,6 +17130,25 @@ var LibraryModal = class extends import_obsidian4.Modal {
       }
     }
     addButton.setTooltip("Save this equation to the library.");
+    this.applyPrefill();
+  }
+  /**
+   * Loads the equation the cursor was sitting in, if the caller found one.
+   *
+   * The name and category stay empty until `refreshCatalog` finds a library
+   * equation with the same LaTeX, which is what turns this into an edit of a
+   * saved equation rather than a fresh one.
+   */
+  applyPrefill() {
+    var _a2, _b2, _c2;
+    const prefill = this.deps.prefill;
+    if (!prefill || prefill.latex.length === 0) return;
+    this.latex = stripDelimiters(prefill.latex);
+    this.latexInput.value = this.latex;
+    (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(this.latex);
+    this.replaceRange = (_b2 = prefill.range) != null ? _b2 : null;
+    this.replaceMode = prefill.mode;
+    if (this.replaceRange) (_c2 = this.insertButtons[0]) == null ? void 0 : _c2.setButtonText("Replace in note");
   }
   buildFooter(parent) {
     const footer = parent.createDiv({ cls: "eqlib-footer" });
@@ -17012,7 +17163,24 @@ var LibraryModal = class extends import_obsidian4.Modal {
   async refreshCatalog() {
     this.catalog = await this.deps.loadCatalog();
     this.syncCategorySelectors();
+    this.adoptPrefilledEquation();
     this.renderGrid();
+  }
+  /**
+   * If the prefilled LaTeX is already in the library, adopt that equation's
+   * name, category and identity so Update saves back to it.
+   */
+  adoptPrefilledEquation() {
+    var _a2;
+    if (this.editingEquationId !== null || this.latex.length === 0) return;
+    if (this.deps.prefill === void 0) return;
+    const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
+    if (!match) return;
+    this.nameInput.value = match.name;
+    this.generatorCategory = match.category;
+    this.generatorCategoryEl.value = match.category;
+    this.editingEquationId = match.id;
+    (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.show();
   }
   syncCategorySelectors() {
     const filter = this.contentEl.querySelector(".eqlib-category-filter");
@@ -17119,6 +17287,13 @@ var LibraryModal = class extends import_obsidian4.Modal {
     if (!this.editor) {
       new import_obsidian4.Notice("Open a markdown note first \u2014 there is nowhere to insert.");
       return false;
+    }
+    const range = this.replaceRange;
+    if (range) {
+      this.replaceRange = null;
+      this.editor.replaceRange(wrapDelimiters(latex, this.replaceMode), range.from, range.to);
+      this.editor.setCursor(range.from);
+      return true;
     }
     const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
     const insertText = isInsideMath(textBeforeCursor) ? stripDelimiters(latex) : wrapDelimiters(latex, this.insertMode(event));
@@ -17467,6 +17642,31 @@ var EquationLibrarySettingTab = class extends import_obsidian7.PluginSettingTab 
         void this.plugin.updateSettings({ logCap: cap }).then(() => this.plugin.recapLog());
       })
     );
+    new import_obsidian7.Setting(containerEl).setName("Storage").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Catalog location").setDesc(
+      "Where equations.json is kept. A file inside the vault is replicated by Obsidian Sync, iCloud and Dropbox alike; the plugin folder is not, which is why the same vault can show a different library on two machines. Switching copies the current equations to the new location."
+    ).addDropdown(
+      (dropdown) => dropdown.addOptions({
+        vault: "In the vault \u2014 syncs between machines",
+        plugin: "Plugin folder \u2014 this machine only"
+      }).setValue(this.plugin.settings.catalogLocation).onChange((value) => {
+        void this.plugin.moveCatalog(value, this.plugin.settings.catalogPath).then(() => this.display());
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Catalog path").setDesc(`Vault-relative path used when the catalog lives in the vault. Default ${DEFAULT_CATALOG_PATH}.`).addText((text) => {
+      text.setPlaceholder(DEFAULT_CATALOG_PATH).setValue(this.plugin.settings.catalogPath);
+      text.inputEl.disabled = this.plugin.settings.catalogLocation !== "vault";
+      const commit = () => {
+        const value = text.getValue().trim();
+        if (value.length === 0 || value === this.plugin.settings.catalogPath) return;
+        void this.plugin.moveCatalog("vault", value).then(() => this.display());
+      };
+      text.inputEl.addEventListener("blur", commit);
+      text.inputEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") commit();
+      });
+      return text;
+    });
     new import_obsidian7.Setting(containerEl).setName("Files").setHeading();
     new import_obsidian7.Setting(containerEl).setName("Equation library").setDesc(this.plugin.store.catalogPath).addButton((button) => button.setButtonText("View JSON").onClick(() => void this.plugin.showCatalogFile()));
     new import_obsidian7.Setting(containerEl).setName("Equation log").setDesc(this.plugin.store.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
@@ -17490,17 +17690,55 @@ var EquationLibraryPlugin = class extends import_obsidian8.Plugin {
     this.settings = DEFAULT_SETTINGS;
     /** The catalog as last read from disk, re-read whenever the modal opens. */
     this.catalog = null;
+    /**
+     * The most recent right-click, used to find the equation under the pointer.
+     *
+     * Chromium moves the caret to the click point before showing a context menu
+     * but WebKit does not, so the click coordinates are the reliable source and
+     * the caret is only the fallback.
+     */
+    this.lastContextMenu = null;
   }
   async onload() {
     this.settings = normalizeSettings(await this.loadData());
     this.store = new PluginStore(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
+    this.store.setCatalogTarget({
+      location: this.settings.catalogLocation,
+      vaultPath: this.settings.catalogPath
+    });
+    const migrated = await this.store.migrateCatalogToTarget();
+    if (migrated !== null) new import_obsidian8.Notice(`Equation Library: moved the catalog to ${migrated} so it syncs with the vault.`);
     configureMathLive({ virtualKeyboard: import_obsidian8.Platform.isMobile });
     this.addCommand({
       id: "show-equation-library",
       name: "Show Equation Library",
-      callback: () => this.openLibrary()
+      // Opening from inside an equation loads that equation, so the command
+      // doubles as "edit this equation".
+      callback: () => {
+        var _a2, _b2;
+        return this.openLibrary(this.prefillFromEditor((_b2 = (_a2 = this.app.workspace.activeEditor) == null ? void 0 : _a2.editor) != null ? _b2 : null));
+      }
     });
     this.addRibbonIcon("sigma", "Show Equation Library", () => this.openLibrary());
+    this.registerDomEvent(document, "contextmenu", (event) => {
+      this.lastContextMenu = event;
+    }, { capture: true });
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        void info;
+        const prefill = this.prefillFromEditor(editor, this.lastContextMenu);
+        if (prefill === void 0) return;
+        menu.addItem(
+          (item) => item.setTitle("Edit equation in Equation Library").setIcon("sigma").onClick(() => this.openLibrary(prefill))
+        );
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (!(file instanceof import_obsidian8.TFile) || file.path !== this.store.catalogPath) return;
+        void this.reloadCatalog();
+      })
+    );
     this.registerEditorSuggest(
       new EquationSuggest(this.app, {
         getSettings: () => this.settings,
@@ -17537,8 +17775,45 @@ var EquationLibraryPlugin = class extends import_obsidian8.Plugin {
     for (const warning of load.warnings) new import_obsidian8.Notice(`Equation Library: ${warning}`);
     return load.catalog;
   }
-  openLibrary() {
+  /**
+   * The equation the cursor sits in, ready to load into the generator.
+   *
+   * The whole document is scanned rather than just the current line, because a
+   * `$$…$$` block spans lines and a fenced code block above the cursor changes
+   * what counts as math below it.
+   */
+  prefillFromEditor(editor, event = null) {
+    if (!editor) return void 0;
+    const span = findMathSpanAt(editor.getValue(), this.offsetAt(editor, event));
+    if (span === null) return void 0;
+    return {
+      latex: span.latex,
+      mode: span.mode,
+      range: { from: editor.offsetToPos(span.start), to: editor.offsetToPos(span.end) }
+    };
+  }
+  /** The document offset a click landed on, falling back to the caret. */
+  offsetAt(editor, event) {
+    const view = editor.cm;
+    if (event && (view == null ? void 0 : view.posAtCoords)) {
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (typeof pos === "number") return pos;
+    }
+    return editor.posToOffset(editor.getCursor());
+  }
+  /** Repoints the catalog at a new location, carrying the equations across. */
+  async moveCatalog(location, rawPath) {
+    var _a2;
+    const catalogPath = normalizeCatalogPath(rawPath);
+    const current = (_a2 = this.catalog) != null ? _a2 : await this.reloadCatalog();
+    await this.updateSettings({ catalogLocation: location, catalogPath });
+    this.store.setCatalogTarget({ location, vaultPath: catalogPath });
+    await this.store.saveCatalog(current);
+    new import_obsidian8.Notice(`Equation Library: catalog now at ${this.store.catalogPath}.`);
+  }
+  openLibrary(prefill) {
     new LibraryModal(this.app, {
+      prefill,
       version: this.manifest.version,
       getSettings: () => this.settings,
       saveSettings: (patch) => this.updateSettings(patch),

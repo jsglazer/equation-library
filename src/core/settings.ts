@@ -27,7 +27,22 @@ export interface EquationLibrarySettings {
 	readonly sortOrder: SortOrder;
 	/** Category filter remembered between library sessions; `null` is "all". */
 	readonly lastCategory: string | null;
+	/**
+	 * Where `equations.json` lives.
+	 *
+	 * `vault` keeps it as an ordinary file inside the vault, which is what every
+	 * sync engine actually replicates. `plugin` is the original location under
+	 * `.obsidian/plugins/`, which Obsidian Sync does not carry between machines
+	 * unless the whole plugin folder is synced.
+	 */
+	readonly catalogLocation: CatalogLocation;
+	/** Vault-relative path used when `catalogLocation` is `vault`. */
+	readonly catalogPath: string;
 }
+
+export type CatalogLocation = "vault" | "plugin";
+
+export const DEFAULT_CATALOG_PATH = "Equation Library/equations.json";
 
 export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	closeOnInsert: true,
@@ -37,10 +52,24 @@ export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	logCap: DEFAULT_LOG_CAP,
 	sortOrder: "name",
 	lastCategory: null,
+	catalogLocation: "vault",
+	catalogPath: DEFAULT_CATALOG_PATH,
 };
 
 const SORT_ORDERS: readonly SortOrder[] = ["name", "created", "modified"];
 const INSERT_FORMATS: readonly InsertFormat[] = ["inline", "always-block"];
+const CATALOG_LOCATIONS: readonly CatalogLocation[] = ["vault", "plugin"];
+
+/**
+ * Trims a user-supplied catalog path and rejects anything that would escape the
+ * vault or name no file at all; the default stands in for those.
+ */
+export function normalizeCatalogPath(raw: unknown): string {
+	if (typeof raw !== "string") return DEFAULT_CATALOG_PATH;
+	const path = raw.trim().replace(/^\/+/, "");
+	if (path.length === 0 || path.split("/").includes("..")) return DEFAULT_CATALOG_PATH;
+	return path;
+}
 
 function pickBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
@@ -70,6 +99,8 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 		lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0
 			? record.lastCategory
 			: null,
+		catalogLocation: pickFrom(record.catalogLocation, CATALOG_LOCATIONS, DEFAULT_SETTINGS.catalogLocation),
+		catalogPath: normalizeCatalogPath(record.catalogPath),
 	};
 }
 

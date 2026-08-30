@@ -7,6 +7,7 @@ import type EquationLibraryPlugin from "../main";
 import { DEFAULT_TRIGGER } from "../core/suggest";
 import { LogCap } from "../core/log";
 import { InsertFormat } from "../core/latex";
+import { CatalogLocation, DEFAULT_CATALOG_PATH } from "../core/settings";
 
 const GITHUB_URL = "https://github.com/jsglazer/equation-library";
 
@@ -79,6 +80,49 @@ export class EquationLibrarySettingTab extends PluginSettingTab {
 						void this.plugin.updateSettings({ logCap: cap }).then(() => this.plugin.recapLog());
 					}),
 			);
+
+		new Setting(containerEl).setName("Storage").setHeading();
+
+		new Setting(containerEl)
+			.setName("Catalog location")
+			.setDesc(
+				"Where equations.json is kept. A file inside the vault is replicated by Obsidian Sync, iCloud and Dropbox alike; " +
+					"the plugin folder is not, which is why the same vault can show a different library on two machines. " +
+					"Switching copies the current equations to the new location.",
+			)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOptions({
+						vault: "In the vault — syncs between machines",
+						plugin: "Plugin folder — this machine only",
+					})
+					.setValue(this.plugin.settings.catalogLocation)
+					.onChange((value) => {
+						void this.plugin
+							.moveCatalog(value as CatalogLocation, this.plugin.settings.catalogPath)
+							.then(() => this.display());
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Catalog path")
+			.setDesc(`Vault-relative path used when the catalog lives in the vault. Default ${DEFAULT_CATALOG_PATH}.`)
+			.addText((text) => {
+				text.setPlaceholder(DEFAULT_CATALOG_PATH).setValue(this.plugin.settings.catalogPath);
+				text.inputEl.disabled = this.plugin.settings.catalogLocation !== "vault";
+				// Committed on blur or Enter rather than per keystroke: every
+				// intermediate path would otherwise get a file of its own.
+				const commit = () => {
+					const value = text.getValue().trim();
+					if (value.length === 0 || value === this.plugin.settings.catalogPath) return;
+					void this.plugin.moveCatalog("vault", value).then(() => this.display());
+				};
+				text.inputEl.addEventListener("blur", commit);
+				text.inputEl.addEventListener("keydown", (event) => {
+					if (event.key === "Enter") commit();
+				});
+				return text;
+			});
 
 		new Setting(containerEl).setName("Files").setHeading();
 

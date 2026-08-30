@@ -121,3 +121,105 @@ export function isInsideMath(textBeforePosition: string): boolean {
 	}
 	return blockOpen || inlineOpen;
 }
+
+/** One complete `$…$` or `$$…$$` span found in a document. */
+export interface MathSpan {
+	/** Offset of the first delimiter character. */
+	readonly start: number;
+	/** Offset one past the last delimiter character. */
+	readonly end: number;
+	readonly mode: InsertMode;
+	/** The contents with the delimiters removed and trimmed. */
+	readonly latex: string;
+}
+
+function makeSpan(text: string, start: number, end: number, mode: InsertMode): MathSpan | null {
+	const latex = stripDelimiters(text.slice(start, end));
+	return latex.length === 0 ? null : { start, end, mode, latex };
+}
+
+/**
+ * Every closed math span in `text`, in document order.
+ *
+ * The scan mirrors `isInsideMath` — fenced code and inline code spans are
+ * skipped, `\$` never toggles state, `$$` is checked before a lone `$`, and a
+ * `$` followed by whitespace or a digit is currency rather than an opener —
+ * but records where each span begins and ends instead of only whether a
+ * position sits inside one. Unterminated spans are dropped: there is nothing
+ * to load into the generator until the equation is closed.
+ */
+export function scanMathSpans(text: string): MathSpan[] {
+	const spans: MathSpan[] = [];
+	const lines = text.split("\n");
+	let fence: string | null = null;
+	let blockStart = -1;
+	let offset = 0;
+
+	for (const line of lines) {
+		const fenceMatch = FENCE.exec(line);
+		// A fence inside an open `$$` block is part of the equation, not code.
+		if (fenceMatch !== null && blockStart < 0) {
+			const marker = fenceMatch[1][0];
+			fence = fence === null ? marker : fence === marker ? null : fence;
+			offset += line.length + 1;
+			continue;
+		}
+		if (fence !== null) {
+			offset += line.length + 1;
+			continue;
+		}
+
+		// Inline math never survives a line break; block math does.
+		let inlineStart = -1;
+		let inCode = false;
+		for (let i = 0; i < line.length; i += 1) {
+			if (line[i] === "\\") {
+				i += 1;
+				continue;
+			}
+			if (blockStart < 0 && line[i] === "`") {
+				while (line[i + 1] === "`") i += 1;
+				inCode = !inCode;
+				continue;
+			}
+			if (inCode || line[i] !== "$") continue;
+			const at = offset + i;
+			if (line[i + 1] === "$") {
+				if (blockStart >= 0) {
+					const span = makeSpan(text, blockStart, at + 2, "block");
+					if (span) spans.push(span);
+					blockStart = -1;
+				} else {
+					blockStart = at;
+					inlineStart = -1;
+				}
+				i += 1;
+				continue;
+			}
+			if (blockStart >= 0) continue;
+			if (inlineStart >= 0) {
+				const span = makeSpan(text, inlineStart, at + 1, "inline");
+				if (span) spans.push(span);
+				inlineStart = -1;
+			} else if (opensInline(line[i + 1])) {
+				inlineStart = at;
+			}
+		}
+		offset += line.length + 1;
+	}
+	return spans;
+}
+
+/**
+ * The math span `offset` sits in, or `null`.
+ *
+ * Both edges count as inside, so a caret resting immediately before the
+ * opening `$` or just after the closing one still finds the equation — that is
+ * where the caret lands when a click selects a rendered equation.
+ */
+export function findMathSpanAt(text: string, offset: number): MathSpan | null {
+	for (const span of scanMathSpans(text)) {
+		if (offset >= span.start && offset <= span.end) return span;
+	}
+	return null;
+}

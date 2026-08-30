@@ -6,7 +6,7 @@
  * delimiter handling — lives in `src/core/`. This class reads the catalog,
  * draws it, and applies the results of those pure functions.
  */
-import { App, ButtonComponent, Editor, Menu, Modal, Notice, Setting } from "obsidian";
+import { App, ButtonComponent, Editor, EditorPosition, Menu, Modal, Notice, Setting } from "obsidian";
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
 import { InsertMode, isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
@@ -36,6 +36,19 @@ export interface LogRequest {
 	readonly category?: string;
 }
 
+/**
+ * An equation the modal should open with already loaded in the generator.
+ *
+ * `range` is the span in the document the LaTeX came from: when it is present
+ * an insert rewrites that span in place — editing an equation where it sits —
+ * rather than adding a second copy at the cursor.
+ */
+export interface GeneratorPrefill {
+	readonly latex: string;
+	readonly mode: InsertMode;
+	readonly range?: { readonly from: EditorPosition; readonly to: EditorPosition };
+}
+
 export interface LibraryModalDeps {
 	readonly version: string;
 	readonly getSettings: () => EquationLibrarySettings;
@@ -46,6 +59,8 @@ export interface LibraryModalDeps {
 	readonly mintId: () => string;
 	readonly now: () => string;
 	readonly isMobile: boolean;
+	/** Equation under the cursor, loaded into the generator on open. */
+	readonly prefill?: GeneratorPrefill;
 }
 
 const ALL_CATEGORIES = "__all__";
@@ -80,6 +95,14 @@ export class LibraryModal extends Modal {
 	private updateButton: ButtonComponent | null = null;
 	/** The equation the generator is editing, or null when building a fresh one. */
 	private editingEquationId: string | null = null;
+	/**
+	 * The document span an insert should overwrite, taken from the prefill.
+	 *
+	 * Cleared after the first insert: the positions describe the document as it
+	 * was when the modal opened, and rewriting the span invalidates them.
+	 */
+	private replaceRange: GeneratorPrefill["range"] | null = null;
+	private replaceMode: InsertMode = "inline";
 
 	constructor(app: App, private readonly deps: LibraryModalDeps) {
 		super(app);
@@ -283,6 +306,27 @@ export class LibraryModal extends Modal {
 			}
 		}
 		addButton.setTooltip("Save this equation to the library.");
+
+		this.applyPrefill();
+	}
+
+	/**
+	 * Loads the equation the cursor was sitting in, if the caller found one.
+	 *
+	 * The name and category stay empty until `refreshCatalog` finds a library
+	 * equation with the same LaTeX, which is what turns this into an edit of a
+	 * saved equation rather than a fresh one.
+	 */
+	private applyPrefill(): void {
+		const prefill = this.deps.prefill;
+		if (!prefill || prefill.latex.length === 0) return;
+		this.latex = stripDelimiters(prefill.latex);
+		this.latexInput.value = this.latex;
+		this.mathField?.setLatex(this.latex);
+		this.replaceRange = prefill.range ?? null;
+		this.replaceMode = prefill.mode;
+		// The primary action is no longer "add a copy at the cursor".
+		if (this.replaceRange) this.insertButtons[0]?.setButtonText("Replace in note");
 	}
 
 	private buildFooter(parent: HTMLElement): void {
@@ -303,7 +347,24 @@ export class LibraryModal extends Modal {
 	private async refreshCatalog(): Promise<void> {
 		this.catalog = await this.deps.loadCatalog();
 		this.syncCategorySelectors();
+		this.adoptPrefilledEquation();
 		this.renderGrid();
+	}
+
+	/**
+	 * If the prefilled LaTeX is already in the library, adopt that equation's
+	 * name, category and identity so Update saves back to it.
+	 */
+	private adoptPrefilledEquation(): void {
+		if (this.editingEquationId !== null || this.latex.length === 0) return;
+		if (this.deps.prefill === undefined) return;
+		const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
+		if (!match) return;
+		this.nameInput.value = match.name;
+		this.generatorCategory = match.category;
+		this.generatorCategoryEl.value = match.category;
+		this.editingEquationId = match.id;
+		this.updateButton?.buttonEl.show();
 	}
 
 	private syncCategorySelectors(): void {
@@ -427,6 +488,15 @@ export class LibraryModal extends Modal {
 		if (!this.editor) {
 			new Notice("Open a markdown note first — there is nowhere to insert.");
 			return false;
+		}
+		// An equation opened from the document is rewritten where it sits, in the
+		// delimiters it already had; the positions are good for one insert only.
+		const range = this.replaceRange;
+		if (range) {
+			this.replaceRange = null;
+			this.editor.replaceRange(wrapDelimiters(latex, this.replaceMode), range.from, range.to);
+			this.editor.setCursor(range.from);
+			return true;
 		}
 		const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
 		const insertText = isInsideMath(textBeforeCursor)

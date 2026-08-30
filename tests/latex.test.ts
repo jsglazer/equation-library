@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../src/core/latex";
+import {
+	findMathSpanAt,
+	isInsideMath,
+	resolveInsertMode,
+	scanMathSpans,
+	stripDelimiters,
+	wrapDelimiters,
+} from "../src/core/latex";
 
 describe("stripDelimiters", () => {
 	it("strips one matched inline pair", () => {
@@ -140,5 +147,50 @@ describe("isInsideMath", () => {
 
 	it("still sees math after a fenced block closes", () => {
 		expect(isInsideMath("```\ncode\n```\n$x^2")).toBe(true);
+	});
+});
+
+describe("scanMathSpans", () => {
+	it("finds inline and block spans with their offsets", () => {
+		const text = "before $x^2$ after\n$$\\frac{a}{b}$$\n";
+		expect(scanMathSpans(text)).toEqual([
+			{ start: 7, end: 12, mode: "inline", latex: "x^2" },
+			{ start: 19, end: 34, mode: "block", latex: "\\frac{a}{b}" },
+		]);
+	});
+
+	it("carries a block across lines", () => {
+		const spans = scanMathSpans("$$\na = b\n$$");
+		expect(spans).toHaveLength(1);
+		expect(spans[0]).toMatchObject({ mode: "block", latex: "a = b" });
+	});
+
+	it("ignores dollars in fenced code, inline code and currency", () => {
+		expect(scanMathSpans("```sh\n$ echo $PATH\n```")).toEqual([]);
+		expect(scanMathSpans("`$= dv.pages()$`")).toEqual([]);
+		expect(scanMathSpans("it cost $100 not $200 today")).toEqual([]);
+	});
+
+	it("ignores an escaped dollar and an unterminated span", () => {
+		expect(scanMathSpans("\\$x\\$")).toEqual([]);
+		expect(scanMathSpans("$x^2 with no closer")).toEqual([]);
+	});
+});
+
+describe("findMathSpanAt", () => {
+	const text = "before $x^2$ after";
+
+	it("finds the span the offset sits inside", () => {
+		expect(findMathSpanAt(text, 9)?.latex).toBe("x^2");
+	});
+
+	it("counts both delimiters as inside", () => {
+		expect(findMathSpanAt(text, 7)?.latex).toBe("x^2");
+		expect(findMathSpanAt(text, 12)?.latex).toBe("x^2");
+	});
+
+	it("returns null outside every span", () => {
+		expect(findMathSpanAt(text, 3)).toBeNull();
+		expect(findMathSpanAt(text, 15)).toBeNull();
 	});
 });
