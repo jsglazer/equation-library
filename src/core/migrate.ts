@@ -24,7 +24,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 		: null;
 }
 
-function readEquation(value: unknown, index: number, warnings: string[]): Omit<Equation, "name"> & { name: string } | null {
+function readEquation(value: unknown, index: number, warnings: string[]): Equation | null {
 	const record = asRecord(value);
 	if (!record) {
 		warnings.push(`Entry ${index} is not an object and was dropped.`);
@@ -45,7 +45,11 @@ function readEquation(value: unknown, index: number, warnings: string[]): Omit<E
 		: UNCATEGORIZED;
 	const created = typeof record.created === "string" ? record.created : "";
 	const modified = typeof record.modified === "string" ? record.modified : created;
-	return { id, name, latex, category, created, modified };
+	// A blank or non-string note is simply absent; the field is optional.
+	const note = typeof record.note === "string" && record.note.trim().length > 0
+		? record.note.trim()
+		: undefined;
+	return { id, name, latex, category, ...(note !== undefined ? { note } : {}), created, modified };
 }
 
 /**

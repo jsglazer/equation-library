@@ -4,6 +4,21 @@ import { CURRENT_SCHEMA_VERSION, UNCATEGORIZED } from "../src/core/types";
 import { mockCatalog } from "./fixtures";
 
 describe("migrateCatalog", () => {
+	it("carries a note across and drops a blank or non-string one", () => {
+		const result = migrateCatalog({
+			schemaVersion: 1,
+			categories: ["Algebra"],
+			equations: [
+				{ id: "a", name: "Kept", latex: "x", category: "Algebra", note: "  keep me  " },
+				{ id: "b", name: "Blank", latex: "y", category: "Algebra", note: "   " },
+				{ id: "c", name: "Wrong type", latex: "z", category: "Algebra", note: 7 },
+			],
+		});
+		expect(result.catalog.equations[0].note).toBe("keep me");
+		expect(result.catalog.equations[1]).not.toHaveProperty("note");
+		expect(result.catalog.equations[2]).not.toHaveProperty("note");
+	});
+
 	it("passes a current catalog through unchanged", () => {
 		const before = mockCatalog();
 		const result = migrateCatalog(JSON.parse(JSON.stringify(before)));

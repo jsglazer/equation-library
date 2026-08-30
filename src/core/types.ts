@@ -18,6 +18,12 @@ export interface Equation {
 	/** Bare LaTeX: no surrounding `$` or `$$`. Delimiters are added at insert time. */
 	readonly latex: string;
 	readonly category: string;
+	/**
+	 * Free-text note about the equation — what it is for, where it came from.
+	 * Absent on equations saved before notes existed and on equations with an
+	 * empty note; never an empty string.
+	 */
+	readonly note?: string;
 	/** ISO-8601 timestamp supplied by the caller; core never reads the clock. */
 	readonly created: string;
 	readonly modified: string;

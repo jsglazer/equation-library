@@ -32,9 +32,16 @@ describe("scoreEquation", () => {
 		expect(scoreEquation(target, "ratic")).toBe(3);
 	});
 
-	it("falls back to the normalized name, then the LaTeX", () => {
+	it("falls back to the normalized name, then the note, then the LaTeX", () => {
 		expect(scoreEquation(target, "quadraticfor")).toBe(4);
-		expect(scoreEquation(target, "\\frac")).toBe(5);
+		expect(scoreEquation(target, "\\frac")).toBe(6);
+		const noted = equation({ id: "n", name: "Roots", latex: "x", note: "Solves ax^2 + bx + c" });
+		expect(scoreEquation(noted, "solves")).toBe(5);
+	});
+
+	it("skips the note tier when notes are excluded", () => {
+		const noted = equation({ id: "n", name: "Roots", latex: "x", note: "Solves ax^2 + bx + c" });
+		expect(scoreEquation(noted, "solves", false)).toBeNull();
 	});
 
 	it("returns null when nothing matches", () => {

@@ -16,11 +16,15 @@ import {
 } from "./types";
 import { stripDelimiters } from "./latex";
 
+type MutableEquation = { -readonly [K in keyof Equation]: Equation[K] };
+
 export interface NewEquation {
 	readonly id: string;
 	readonly name: string;
 	readonly latex: string;
 	readonly category: string;
+	/** Free-text note; blank or absent stores no note at all. */
+	readonly note?: string;
 	/** ISO timestamp; used for both `created` and `modified`. */
 	readonly now: string;
 }
@@ -44,6 +48,15 @@ export function uniqueName(existing: readonly string[], desired: string): string
 	}
 }
 
+/**
+ * Normalizes a note for storage: trimmed, and absent rather than empty so a
+ * blank note never lands in the catalog JSON.
+ */
+function noteFields(note: string | undefined): { note?: string } {
+	const trimmed = (note ?? "").trim();
+	return trimmed.length > 0 ? { note: trimmed } : {};
+}
+
 /** Guarantees the reserved category exists and sits first in the list. */
 export function ensureUncategorized(catalog: Catalog): Catalog {
 	const rest = catalog.categories.filter((c) => c !== UNCATEGORIZED);
@@ -62,6 +75,7 @@ export function addEquation(catalog: Catalog, input: NewEquation): Outcome<Catal
 		name: uniqueName(catalog.equations.map((e) => e.name), name),
 		latex,
 		category,
+		...noteFields(input.note),
 		created: input.now,
 		modified: input.now,
 	};
@@ -74,7 +88,7 @@ export function addEquation(catalog: Catalog, input: NewEquation): Outcome<Catal
 export function updateEquation(
 	catalog: Catalog,
 	id: string,
-	patch: Partial<Pick<Equation, "name" | "latex" | "category">>,
+	patch: Partial<Pick<Equation, "name" | "latex" | "category" | "note">>,
 	now: string,
 ): Outcome<Catalog> {
 	const target = catalog.equations.find((e) => e.id === id);
@@ -87,11 +101,17 @@ export function updateEquation(
 	const category = (patch.category === undefined ? target.category : patch.category.trim()) || UNCATEGORIZED;
 
 	const otherNames = catalog.equations.filter((e) => e.id !== id).map((e) => e.name);
+	// The note is re-derived below, so the inherited one is dropped first:
+	// an omitted `note` in the patch means "leave it alone", while a blank one
+	// means "clear it", and the latter has to survive the spread.
+	const carried: MutableEquation = { ...target };
+	delete carried.note;
 	const updated: Equation = {
-		...target,
+		...carried,
 		name: uniqueName(otherNames, name),
 		latex,
 		category,
+		...noteFields(patch.note === undefined ? target.note : patch.note),
 		modified: now,
 	};
 	const categories = catalog.categories.includes(category)

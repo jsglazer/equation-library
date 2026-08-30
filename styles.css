@@ -180,6 +180,15 @@
 	cursor: default;
 }
 
+.eqlib-note {
+	width: 100%;
+	min-height: 2.5rem;
+	resize: vertical;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	background-color: var(--background-primary);
+}
+
 .eqlib-latex {
 	width: 100%;
 	min-height: 4rem;

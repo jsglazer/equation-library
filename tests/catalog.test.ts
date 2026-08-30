@@ -78,6 +78,43 @@ describe("addEquation", () => {
 	});
 });
 
+describe("equation notes", () => {
+	it("stores a trimmed note and omits a blank one", () => {
+		const withNote = expectOk(
+			addEquation(createCatalog(), {
+				id: "id-note",
+				name: "Pythagoras",
+				latex: "a^2 + b^2 = c^2",
+				category: "Geometry",
+				note: "  Right triangles only.  ",
+				now: NOW,
+			}),
+		);
+		expect(withNote.equations[0].note).toBe("Right triangles only.");
+
+		const blank = expectOk(
+			addEquation(createCatalog(), {
+				id: "id-blank",
+				name: "Pythagoras",
+				latex: "a^2 + b^2 = c^2",
+				category: "Geometry",
+				note: "   ",
+				now: NOW,
+			}),
+		);
+		expect(blank.equations[0]).not.toHaveProperty("note");
+	});
+
+	it("keeps the note when the patch omits it and clears it when the patch is blank", () => {
+		const base = expectOk(updateEquation(mockCatalog(), "eq-euler", { note: "Ties five constants." }, NOW));
+		const kept = expectOk(updateEquation(base, "eq-euler", { name: "Euler Identity" }, NOW));
+		expect(kept.equations.find((e) => e.id === "eq-euler")?.note).toBe("Ties five constants.");
+
+		const cleared = expectOk(updateEquation(base, "eq-euler", { note: "  " }, NOW));
+		expect(cleared.equations.find((e) => e.id === "eq-euler")).not.toHaveProperty("note");
+	});
+});
+
 describe("updateEquation", () => {
 	it("patches fields and bumps modified but not created", () => {
 		const catalog = expectOk(updateEquation(mockCatalog(), "eq-euler", { latex: "$$e^{i\\pi} = -1$$" }, NOW));

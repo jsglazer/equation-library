@@ -332,6 +332,10 @@ function uniqueName(existing, desired) {
     if (!taken.has(candidate)) return candidate;
   }
 }
+function noteFields(note) {
+  const trimmed = (note != null ? note : "").trim();
+  return trimmed.length > 0 ? { note: trimmed } : {};
+}
 function ensureUncategorized(catalog) {
   const rest = catalog.categories.filter((c) => c !== UNCATEGORIZED);
   return { ...catalog, categories: [UNCATEGORIZED, ...rest] };
@@ -347,6 +351,7 @@ function addEquation(catalog, input) {
     name: uniqueName(catalog.equations.map((e) => e.name), name),
     latex,
     category,
+    ...noteFields(input.note),
     created: input.now,
     modified: input.now
   };
@@ -362,11 +367,14 @@ function updateEquation(catalog, id2, patch, now) {
   if (latex.length === 0) return fail("An equation needs some LaTeX.");
   const category = (patch.category === void 0 ? target.category : patch.category.trim()) || UNCATEGORIZED;
   const otherNames = catalog.equations.filter((e) => e.id !== id2).map((e) => e.name);
+  const carried = { ...target };
+  delete carried.note;
   const updated = {
-    ...target,
+    ...carried,
     name: uniqueName(otherNames, name),
     latex,
     category,
+    ...noteFields(patch.note === void 0 ? target.note : patch.note),
     modified: now
   };
   const categories = catalog.categories.includes(category) ? catalog.categories : [...catalog.categories, category];
@@ -442,7 +450,8 @@ function readEquation(value, index, warnings) {
   const category = typeof record.category === "string" && record.category.trim().length > 0 ? record.category.trim() : UNCATEGORIZED;
   const created = typeof record.created === "string" ? record.created : "";
   const modified = typeof record.modified === "string" ? record.modified : created;
-  return { id: id2, name, latex, category, created, modified };
+  const note = typeof record.note === "string" && record.note.trim().length > 0 ? record.note.trim() : void 0;
+  return { id: id2, name, latex, category, ...note !== void 0 ? { note } : {}, created, modified };
 }
 function migrateCatalog(raw) {
   const warnings = [];
@@ -707,7 +716,8 @@ var import_obsidian2 = require("obsidian");
 function normalize(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
-function scoreEquation(equation, query) {
+function scoreEquation(equation, query, searchNotes = true) {
+  var _a2;
   const q2 = query.trim().toLowerCase();
   if (q2.length === 0) return 0;
   const name = equation.name.toLowerCase();
@@ -717,7 +727,8 @@ function scoreEquation(equation, query) {
   if (name.includes(q2)) return 3;
   const nq = normalize(query);
   if (nq.length > 0 && normalize(equation.name).includes(nq)) return 4;
-  if (equation.latex.toLowerCase().includes(q2)) return 5;
+  if (searchNotes && ((_a2 = equation.note) != null ? _a2 : "").toLowerCase().includes(q2)) return 5;
+  if (equation.latex.toLowerCase().includes(q2)) return 6;
   return null;
 }
 function compareBy(order, a, b) {
@@ -734,7 +745,7 @@ function searchEquations(equations, query) {
   const scoped = filterByCategory(equations, query.category);
   const scored = [];
   for (const equation of scoped) {
-    const score = scoreEquation(equation, query.text);
+    const score = scoreEquation(equation, query.text, query.searchNotes !== false);
     if (score !== null) scored.push({ equation, score });
   }
   return scored.sort((a, b) => {
@@ -744,7 +755,12 @@ function searchEquations(equations, query) {
   }).map((entry) => entry.equation);
 }
 function matchSuggestions(equations, query, limit) {
-  const results = searchEquations(equations, { text: query, category: null, sort: "name" });
+  const results = searchEquations(equations, {
+    text: query,
+    category: null,
+    sort: "name",
+    searchNotes: false
+  });
   return limit > 0 ? results.slice(0, limit) : results;
 }
 
@@ -16992,6 +17008,7 @@ var LibraryModal = class extends import_obsidian4.Modal {
     this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
     this.buildGenerator(contentEl);
     this.buildFooter(contentEl);
+    this.registerShortcuts(contentEl);
     this.focusLatexInput();
     const win = contentEl.win;
     this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
@@ -17019,6 +17036,28 @@ var LibraryModal = class extends import_obsidian4.Modal {
     const win = this.contentEl.win;
     win.setTimeout(focus, 0);
     win.requestAnimationFrame(focus);
+  }
+  /**
+   * Cmd/Ctrl+Return runs the primary action — Insert at cursor, or Replace in
+   * note when the modal was opened on an equation in the document — and
+   * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the modal
+   * content rather than per field so they fire from the LaTeX box, the name,
+   * the note or a focused button alike.
+   *
+   * Neither fires without an editor to insert into, which is the same
+   * condition that disables the two buttons.
+   */
+  registerShortcuts(contentEl) {
+    contentEl.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+      if (this.editor === null) {
+        new import_obsidian4.Notice("Open a markdown note to insert an equation.");
+        return;
+      }
+      event.preventDefault();
+      if (event.shiftKey) void this.onAddAndInsert(void 0);
+      else this.onInsert(void 0);
+    });
   }
   onClose() {
     var _a2, _b2;
@@ -17094,6 +17133,9 @@ var LibraryModal = class extends import_obsidian4.Modal {
       this.generatorCategory = categorySelect.value;
     });
     this.generatorCategoryEl = categorySelect;
+    this.noteInput = panel.createEl("textarea", { cls: "eqlib-note" });
+    this.noteInput.placeholder = "Note (optional) \u2014 what this is for, where it came from";
+    this.noteInput.rows = 2;
     const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
     fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
     new import_obsidian4.ButtonComponent(fieldHeader).setIcon("image-down").setTooltip("Copy the rendered equation as a PNG").onClick(() => void this.onCopyPng());
@@ -17117,9 +17159,9 @@ var LibraryModal = class extends import_obsidian4.Modal {
     });
     const buttons = panel.createDiv({ cls: "eqlib-buttons" });
     this.insertButtons = [];
-    const insertButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Insert at cursor").setCta().onClick((event) => this.onInsert(event));
+    const insertButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Insert at cursor").setTooltip(`Insert the equation into the note (${this.modifierLabel()}+Return).`).setCta().onClick((event) => this.onInsert(event));
     const addButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Add to Library").onClick(() => void this.onAddToLibrary());
-    const addInsertButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Add & Insert").onClick((event) => void this.onAddAndInsert(event));
+    const addInsertButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Add & Insert").setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`).onClick((event) => void this.onAddAndInsert(event));
     this.insertButtons = [insertButton, addInsertButton];
     this.updateButton = new import_obsidian4.ButtonComponent(buttons).setButtonText("Update").setTooltip("Save these changes back to the equation loaded from the library.").onClick(() => void this.onUpdateEquation());
     this.updateButton.buttonEl.hide();
@@ -17139,6 +17181,10 @@ var LibraryModal = class extends import_obsidian4.Modal {
    * equation with the same LaTeX, which is what turns this into an edit of a
    * saved equation rather than a fresh one.
    */
+  /** The modifier the platform actually uses, for tooltips. */
+  modifierLabel() {
+    return import_obsidian4.Platform.isMacOS ? "Cmd" : "Ctrl";
+  }
   applyPrefill() {
     var _a2, _b2, _c2;
     const prefill = this.deps.prefill;
@@ -17148,7 +17194,9 @@ var LibraryModal = class extends import_obsidian4.Modal {
     (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(this.latex);
     this.replaceRange = (_b2 = prefill.range) != null ? _b2 : null;
     this.replaceMode = prefill.mode;
-    if (this.replaceRange) (_c2 = this.insertButtons[0]) == null ? void 0 : _c2.setButtonText("Replace in note");
+    if (this.replaceRange) {
+      (_c2 = this.insertButtons[0]) == null ? void 0 : _c2.setButtonText("Replace in note").setTooltip(`Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).`);
+    }
   }
   buildFooter(parent) {
     const footer = parent.createDiv({ cls: "eqlib-footer" });
@@ -17171,16 +17219,17 @@ var LibraryModal = class extends import_obsidian4.Modal {
    * name, category and identity so Update saves back to it.
    */
   adoptPrefilledEquation() {
-    var _a2;
+    var _a2, _b2;
     if (this.editingEquationId !== null || this.latex.length === 0) return;
     if (this.deps.prefill === void 0) return;
     const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
     if (!match) return;
     this.nameInput.value = match.name;
+    this.noteInput.value = (_a2 = match.note) != null ? _a2 : "";
     this.generatorCategory = match.category;
     this.generatorCategoryEl.value = match.category;
     this.editingEquationId = match.id;
-    (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.show();
+    (_b2 = this.updateButton) == null ? void 0 : _b2.buttonEl.show();
   }
   syncCategorySelectors() {
     const filter = this.contentEl.querySelector(".eqlib-category-filter");
@@ -17262,15 +17311,16 @@ var LibraryModal = class extends import_obsidian4.Modal {
   }
   // -------------------------------------------------------------- actions
   loadIntoGenerator(equation) {
-    var _a2, _b2;
+    var _a2, _b2, _c2;
     this.latex = equation.latex;
     this.latexInput.value = equation.latex;
     (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(equation.latex);
     this.nameInput.value = equation.name;
+    this.noteInput.value = (_b2 = equation.note) != null ? _b2 : "";
     this.generatorCategory = equation.category;
     this.generatorCategoryEl.value = equation.category;
     this.editingEquationId = equation.id;
-    (_b2 = this.updateButton) == null ? void 0 : _b2.buttonEl.show();
+    (_c2 = this.updateButton) == null ? void 0 : _c2.buttonEl.show();
   }
   currentLatex() {
     return stripDelimiters(this.latex.length > 0 ? this.latex : this.latexInput.value);
@@ -17353,6 +17403,7 @@ var LibraryModal = class extends import_obsidian4.Modal {
       name,
       latex,
       category: this.generatorCategory,
+      note: this.noteInput.value,
       now: this.deps.now()
     });
     if (!result.ok) {
@@ -17401,7 +17452,12 @@ var LibraryModal = class extends import_obsidian4.Modal {
       this.nameInput.focus();
       return;
     }
-    const result = updateEquation(this.catalog, id2, { name, latex, category: this.generatorCategory }, this.deps.now());
+    const result = updateEquation(
+      this.catalog,
+      id2,
+      { name, latex, category: this.generatorCategory, note: this.noteInput.value },
+      this.deps.now()
+    );
     if (!result.ok) {
       new import_obsidian4.Notice(result.error);
       return;

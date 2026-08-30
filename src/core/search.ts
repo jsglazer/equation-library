@@ -16,6 +16,12 @@ export interface SearchQuery {
 	/** `null` means "all categories". */
 	readonly category: string | null;
 	readonly sort: SortOrder;
+	/**
+	 * Whether note text counts as a match. The library grid searches notes;
+	 * the editor autocomplete does not, so typing a word that happens to sit
+	 * in someone's note does not fill the popup with unrelated equations.
+	 */
+	readonly searchNotes?: boolean;
 }
 
 export const DEFAULT_QUERY: SearchQuery = { text: "", category: null, sort: "name" };
@@ -30,9 +36,10 @@ export function normalize(text: string): string {
  *
  * The tiers are, in order: exact name, name prefix, word-start inside the
  * name, name substring, normalized-name substring (so "quadform" finds
- * "Quadratic Formula"), then a LaTeX substring match as the last resort.
+ * "Quadratic Formula"), the note text, then a LaTeX substring match as the
+ * last resort. Pass `searchNotes: false` to skip the note tier.
  */
-export function scoreEquation(equation: Equation, query: string): number | null {
+export function scoreEquation(equation: Equation, query: string, searchNotes = true): number | null {
 	const q = query.trim().toLowerCase();
 	if (q.length === 0) return 0;
 
@@ -44,7 +51,8 @@ export function scoreEquation(equation: Equation, query: string): number | null 
 
 	const nq = normalize(query);
 	if (nq.length > 0 && normalize(equation.name).includes(nq)) return 4;
-	if (equation.latex.toLowerCase().includes(q)) return 5;
+	if (searchNotes && (equation.note ?? "").toLowerCase().includes(q)) return 5;
+	if (equation.latex.toLowerCase().includes(q)) return 6;
 	return null;
 }
 
@@ -79,7 +87,7 @@ export function searchEquations(equations: readonly Equation[], query: SearchQue
 	const scoped = filterByCategory(equations, query.category);
 	const scored: Array<{ equation: Equation; score: number }> = [];
 	for (const equation of scoped) {
-		const score = scoreEquation(equation, query.text);
+		const score = scoreEquation(equation, query.text, query.searchNotes !== false);
 		if (score !== null) scored.push({ equation, score });
 	}
 	return scored
@@ -100,6 +108,11 @@ export function matchSuggestions(
 	query: string,
 	limit: number,
 ): Equation[] {
-	const results = searchEquations(equations, { text: query, category: null, sort: "name" });
+	const results = searchEquations(equations, {
+		text: query,
+		category: null,
+		sort: "name",
+		searchNotes: false,
+	});
 	return limit > 0 ? results.slice(0, limit) : results;
 }

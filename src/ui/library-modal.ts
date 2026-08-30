@@ -6,7 +6,7 @@
  * delimiter handling — lives in `src/core/`. This class reads the catalog,
  * draws it, and applies the results of those pure functions.
  */
-import { App, ButtonComponent, Editor, EditorPosition, Menu, Modal, Notice, Setting } from "obsidian";
+import { App, ButtonComponent, Editor, EditorPosition, Menu, Modal, Notice, Platform, Setting } from "obsidian";
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
 import { InsertMode, isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
@@ -88,6 +88,7 @@ export class LibraryModal extends Modal {
 	private mathField: MathFieldHandle | null = null;
 	private latexInput!: HTMLTextAreaElement;
 	private nameInput!: HTMLInputElement;
+	private noteInput!: HTMLTextAreaElement;
 	private generatorCategoryEl!: HTMLSelectElement;
 	private generatorCategory = UNCATEGORIZED;
 	private latex = "";
@@ -123,6 +124,7 @@ export class LibraryModal extends Modal {
 		this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
 		this.buildGenerator(contentEl);
 		this.buildFooter(contentEl);
+		this.registerShortcuts(contentEl);
 		this.focusLatexInput();
 
 		const win = contentEl.win as Window & typeof globalThis;
@@ -155,6 +157,31 @@ export class LibraryModal extends Modal {
 		// Obsidian's own focus call depends on the platform, so run both.
 		win.setTimeout(focus, 0);
 		win.requestAnimationFrame(focus);
+	}
+
+	/**
+	 * Cmd/Ctrl+Return runs the primary action — Insert at cursor, or Replace in
+	 * note when the modal was opened on an equation in the document — and
+	 * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the modal
+	 * content rather than per field so they fire from the LaTeX box, the name,
+	 * the note or a focused button alike.
+	 *
+	 * Neither fires without an editor to insert into, which is the same
+	 * condition that disables the two buttons.
+	 */
+	private registerShortcuts(contentEl: HTMLElement): void {
+		contentEl.addEventListener("keydown", (event) => {
+			if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+			if (this.editor === null) {
+				new Notice("Open a markdown note to insert an equation.");
+				return;
+			}
+			event.preventDefault();
+			// The shortcut carries no format intent of its own: Shift already
+			// selects the action, so the insert format stays the configured one.
+			if (event.shiftKey) void this.onAddAndInsert(undefined);
+			else this.onInsert(undefined);
+		});
 	}
 
 	onClose(): void {
@@ -250,6 +277,10 @@ export class LibraryModal extends Modal {
 		});
 		this.generatorCategoryEl = categorySelect;
 
+		this.noteInput = panel.createEl("textarea", { cls: "eqlib-note" });
+		this.noteInput.placeholder = "Note (optional) — what this is for, where it came from";
+		this.noteInput.rows = 2;
+
 		const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
 		fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
 		new ButtonComponent(fieldHeader)
@@ -281,6 +312,7 @@ export class LibraryModal extends Modal {
 
 		const insertButton = new ButtonComponent(buttons)
 			.setButtonText("Insert at cursor")
+			.setTooltip(`Insert the equation into the note (${this.modifierLabel()}+Return).`)
 			.setCta()
 			.onClick((event) => this.onInsert(event));
 		const addButton = new ButtonComponent(buttons)
@@ -288,6 +320,7 @@ export class LibraryModal extends Modal {
 			.onClick(() => void this.onAddToLibrary());
 		const addInsertButton = new ButtonComponent(buttons)
 			.setButtonText("Add & Insert")
+			.setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`)
 			.onClick((event) => void this.onAddAndInsert(event));
 		this.insertButtons = [insertButton, addInsertButton];
 
@@ -317,6 +350,11 @@ export class LibraryModal extends Modal {
 	 * equation with the same LaTeX, which is what turns this into an edit of a
 	 * saved equation rather than a fresh one.
 	 */
+	/** The modifier the platform actually uses, for tooltips. */
+	private modifierLabel(): string {
+		return Platform.isMacOS ? "Cmd" : "Ctrl";
+	}
+
 	private applyPrefill(): void {
 		const prefill = this.deps.prefill;
 		if (!prefill || prefill.latex.length === 0) return;
@@ -326,7 +364,11 @@ export class LibraryModal extends Modal {
 		this.replaceRange = prefill.range ?? null;
 		this.replaceMode = prefill.mode;
 		// The primary action is no longer "add a copy at the cursor".
-		if (this.replaceRange) this.insertButtons[0]?.setButtonText("Replace in note");
+		if (this.replaceRange) {
+			this.insertButtons[0]
+				?.setButtonText("Replace in note")
+				.setTooltip(`Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).`);
+		}
 	}
 
 	private buildFooter(parent: HTMLElement): void {
@@ -361,6 +403,7 @@ export class LibraryModal extends Modal {
 		const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
 		if (!match) return;
 		this.nameInput.value = match.name;
+		this.noteInput.value = match.note ?? "";
 		this.generatorCategory = match.category;
 		this.generatorCategoryEl.value = match.category;
 		this.editingEquationId = match.id;
@@ -465,6 +508,7 @@ export class LibraryModal extends Modal {
 		this.latexInput.value = equation.latex;
 		this.mathField?.setLatex(equation.latex);
 		this.nameInput.value = equation.name;
+		this.noteInput.value = equation.note ?? "";
 		this.generatorCategory = equation.category;
 		this.generatorCategoryEl.value = equation.category;
 		this.editingEquationId = equation.id;
@@ -484,7 +528,7 @@ export class LibraryModal extends Modal {
 	 * drops the delimiters — adding another pair would either break the
 	 * existing equation or start a nested one.
 	 */
-	private insertIntoEditor(latex: string, event: MouseEvent | undefined): boolean {
+	private insertIntoEditor(latex: string, event: MouseEvent | KeyboardEvent | undefined): boolean {
 		if (!this.editor) {
 			new Notice("Open a markdown note first — there is nowhere to insert.");
 			return false;
@@ -510,7 +554,7 @@ export class LibraryModal extends Modal {
 		if (this.deps.getSettings().closeOnInsert) this.close();
 	}
 
-	private onInsert(event: MouseEvent): void {
+	private onInsert(event: MouseEvent | KeyboardEvent | undefined): void {
 		const latex = this.currentLatex();
 		if (latex.length === 0) {
 			new Notice("Nothing to insert — the generator is empty.");
@@ -563,6 +607,7 @@ export class LibraryModal extends Modal {
 			name,
 			latex,
 			category: this.generatorCategory,
+			note: this.noteInput.value,
 			now: this.deps.now(),
 		});
 		if (!result.ok) {
@@ -586,7 +631,7 @@ export class LibraryModal extends Modal {
 		});
 	}
 
-	private async onAddAndInsert(event: MouseEvent): Promise<void> {
+	private async onAddAndInsert(event: MouseEvent | KeyboardEvent | undefined): Promise<void> {
 		const added = await this.addCurrentEquation();
 		if (!added) return;
 		if (!this.insertIntoEditor(added.latex, event)) return;
@@ -613,7 +658,12 @@ export class LibraryModal extends Modal {
 			this.nameInput.focus();
 			return;
 		}
-		const result = updateEquation(this.catalog, id, { name, latex, category: this.generatorCategory }, this.deps.now());
+		const result = updateEquation(
+			this.catalog,
+			id,
+			{ name, latex, category: this.generatorCategory, note: this.noteInput.value },
+			this.deps.now(),
+		);
 		if (!result.ok) {
 			new Notice(result.error);
 			return;
