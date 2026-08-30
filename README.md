@@ -50,7 +50,7 @@ An equation you already wrote can be opened back up in the generator, rather tha
 
 Either way the popup opens with that equation loaded, and the primary button becomes **Replace in note**: it rewrites the equation where it sits, keeping the delimiters it already had, instead of adding a second copy at the cursor. If the LaTeX matches something in your library, its name and category come along too and **Update** appears, so one action can fix both the note and the saved equation.
 
-The same parsing rules as below decide what counts as an equation, so a `$ ` shell prompt in a fenced code block or a `$100` price is never mistaken for one.
+The same parsing rules as above decide what counts as an equation, so a `$ ` shell prompt in a fenced code block or a `$100` price is never mistaken for one.
 
 ## Editor autocomplete
 
