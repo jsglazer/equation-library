@@ -17,7 +17,7 @@ Run **Show Equation Library** from the command palette, or click the sigma icon 
 | Click a tile | Loads the equation into the generator for editing, and reveals an **Update** button to save changes back to it |
 | Double-click a tile | Inserts it at the cursor as inline math, `$…$` |
 | Shift + double-click | Inserts it as a block equation, `$$…$$` |
-| Right-click a tile | Rename, move to another category, or delete |
+| Right-click a tile | Rename, move to another category, duplicate, or delete |
 
 Search, filter by category and sort by name, newest or recently changed from the toolbar. Search reads names first, then note text, then the LaTeX itself, so "the one about damped oscillation" is findable even when the name says `x(t)`. The three buttons on the right create, rename and delete categories.
 
