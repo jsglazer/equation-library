@@ -694,6 +694,12 @@ export class LibraryModal extends Modal {
 		);
 		menu.addItem((item) =>
 			item
+				.setTitle("Duplicate")
+				.setIcon("copy")
+				.onClick(() => void this.duplicateEquation(equation)),
+		);
+		menu.addItem((item) =>
+			item
 				.setTitle("Delete")
 				.setIcon("trash-2")
 				.onClick(() => {
@@ -707,6 +713,30 @@ export class LibraryModal extends Modal {
 				}),
 		);
 		menu.showAtMouseEvent(event);
+	}
+
+	private async duplicateEquation(equation: Equation): Promise<void> {
+		const result = addEquation(this.catalog, {
+			id: this.deps.mintId(),
+			name: equation.name,
+			latex: equation.latex,
+			category: equation.category,
+			note: equation.note,
+			now: this.deps.now(),
+		});
+		if (!result.ok) {
+			new Notice(result.error);
+			return;
+		}
+		const added = result.value.equations[result.value.equations.length - 1];
+		await this.commit(result.value);
+		new Notice(`Duplicated as "${added.name}".`);
+		this.deps.log({
+			action: "duplicate-equation",
+			latex: added.latex,
+			name: added.name,
+			category: added.category,
+		});
 	}
 
 	private promptRenameEquation(equation: Equation): void {

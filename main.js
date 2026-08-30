@@ -17479,6 +17479,9 @@ var LibraryModal = class extends import_obsidian4.Modal {
       (item) => item.setTitle("Move to category").setIcon("folder").onClick(() => this.promptMoveEquation(equation, event))
     );
     menu.addItem(
+      (item) => item.setTitle("Duplicate").setIcon("copy").onClick(() => void this.duplicateEquation(equation))
+    );
+    menu.addItem(
       (item) => item.setTitle("Delete").setIcon("trash-2").onClick(() => {
         const result = deleteEquation(this.catalog, equation.id);
         if (!result.ok) {
@@ -17490,6 +17493,29 @@ var LibraryModal = class extends import_obsidian4.Modal {
       })
     );
     menu.showAtMouseEvent(event);
+  }
+  async duplicateEquation(equation) {
+    const result = addEquation(this.catalog, {
+      id: this.deps.mintId(),
+      name: equation.name,
+      latex: equation.latex,
+      category: equation.category,
+      note: equation.note,
+      now: this.deps.now()
+    });
+    if (!result.ok) {
+      new import_obsidian4.Notice(result.error);
+      return;
+    }
+    const added = result.value.equations[result.value.equations.length - 1];
+    await this.commit(result.value);
+    new import_obsidian4.Notice(`Duplicated as "${added.name}".`);
+    this.deps.log({
+      action: "duplicate-equation",
+      latex: added.latex,
+      name: added.name,
+      category: added.category
+    });
   }
   promptRenameEquation(equation) {
     new PromptModal(

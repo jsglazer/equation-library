@@ -1,6 +1,6 @@
 {
 	"name": "equation-library",
-	"version": "1.0.5",
+	"version": "1.0.6",
 	"description": "Pop-up library of custom math formulas with a live LaTeX generator, editor autocomplete and a JSON catalog.",
 	"main": "main.js",
 	"scripts": {
@@ -10,7 +10,13 @@
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},
-	"keywords": ["obsidian", "plugin", "math", "latex", "mathlive"],
+	"keywords": [
+		"obsidian",
+		"plugin",
+		"math",
+		"latex",
+		"mathlive"
+	],
 	"author": "Josh Glazer",
 	"license": "MIT",
 	"dependencies": {

@@ -41,7 +41,8 @@ export type LogAction =
 	| "add-to-library"
 	| "add-and-insert"
 	| "autocomplete-accept"
-	| "update-equation";
+	| "update-equation"
+	| "duplicate-equation";
 
 export interface LogEntry {
 	readonly ts: string;
