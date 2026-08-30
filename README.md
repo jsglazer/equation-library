@@ -19,16 +19,20 @@ Run **Show Equation Library** from the command palette, or click the sigma icon 
 | Shift + double-click | Inserts it as a block equation, `$$…$$` |
 | Right-click a tile | Rename, move to another category, or delete |
 
-Search, filter by category and sort by name, newest or recently changed from the toolbar. The three buttons on the right create, rename and delete categories.
+Search, filter by category and sort by name, newest or recently changed from the toolbar. Search reads names first, then note text, then the LaTeX itself, so "the one about damped oscillation" is findable even when the name says `x(t)`. The three buttons on the right create, rename and delete categories.
 
 **Bottom panel — the generator.** The cursor starts in the plain LaTeX source box, which is the only editable field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. Next to the preview, a **Copy PNG** button rasterizes the current equation and puts it on the clipboard as an image.
+
+Alongside the name and category sits an optional **Note** — free text for what an equation is for, where it came from, or which convention it follows. It is saved by **Add to Library** and **Update**, comes back when you click the tile again, and travels with the equation through export and import.
 
 | Button | Result |
 | --- | --- |
 | Insert at cursor | Inserts what is in the generator into the active note |
 | Add to Library | Saves it as a new equation under the chosen name and category |
 | Add & Insert | Both, in that order |
-| Update *(after clicking a tile)* | Saves the generator's current name, LaTeX and category back to that same equation, in place |
+| Update *(after clicking a tile)* | Saves the generator's current name, LaTeX, category and note back to that same equation, in place |
+
+**Cmd/Ctrl + Return** fires the primary button — *Insert at cursor*, or *Replace in note* when the popup was opened on an equation in the note — and **Shift + Cmd/Ctrl + Return** fires *Add & Insert*. Both work from anywhere in the popup: the LaTeX box, the name, the note.
 
 Hold **shift** while clicking either insert button to get a block equation instead of inline. **Close after inserting** is a toggle in the bottom-left of the popup, and the plugin version sits in the bottom-right.
 
@@ -56,6 +60,7 @@ The same parsing rules as above decide what counts as an equation, so a `$ ` she
 
 Type `$/` anywhere in a note and a picker of your library opens; keep typing to filter it. Accepting a suggestion replaces the whole `$/query` span with the delimited equation (or bare LaTeX, if the trigger was typed inside an equation already open), so no trigger characters are left behind.
 
+- The picker matches on names and LaTeX only — note text is deliberately left out, so a common word in a note never floods the popup.
 - A bare `$` **never** opens the picker. Ordinary inline math typing is completely untouched.
 - The picker does not open inside a fenced code block or an inline code span.
 - Pressing Escape closes it for that spot; it comes back at the next one.
@@ -102,7 +107,7 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 163 unit tests over the pure core
+npm test        # 167 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
