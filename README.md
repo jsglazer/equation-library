@@ -8,7 +8,7 @@ Works on **macOS, Windows, Linux, iOS and Android** (`isDesktopOnly: false`).
 
 ## The popup
 
-Run **Show Equation Library** from the command palette, or click the sigma icon in the ribbon.
+Run **Show Equation Library** from the command palette, or click the sigma icon in the ribbon. Run it with the cursor inside an equation and that equation opens already loaded — see [Editing an equation in a note](#editing-an-equation-in-a-note).
 
 **Top panel — the library.** Every saved equation is rendered in its own fixed-size tile. Tiles render as they scroll into view, so a large library stays responsive.
 
@@ -41,6 +41,17 @@ Hold **shift** while clicking either insert button to get a block equation inste
 - Fenced code blocks and inline code spans are skipped — a `$ ` shell prompt or a Dataview `` `$=` `` query is not an equation.
 - `$100` is money and `$ x` is prose; neither opens math. A `$` typed right at the cursor does.
 
+## Editing an equation in a note
+
+An equation you already wrote can be opened back up in the generator, rather than retyped.
+
+- **Right-click an equation** in the editor and choose **Edit equation in Equation Library**.
+- Or put the cursor inside it and run **Show Equation Library**.
+
+Either way the popup opens with that equation loaded, and the primary button becomes **Replace in note**: it rewrites the equation where it sits, keeping the delimiters it already had, instead of adding a second copy at the cursor. If the LaTeX matches something in your library, its name and category come along too and **Update** appears, so one action can fix both the note and the saved equation.
+
+The same parsing rules as below decide what counts as an equation, so a `$ ` shell prompt in a fenced code block or a `$100` price is never mistaken for one.
+
 ## Editor autocomplete
 
 Type `$/` anywhere in a note and a picker of your library opens; keep typing to filter it. Accepting a suggestion replaces the whole `$/query` span with the delimited equation (or bare LaTeX, if the trigger was typed inside an equation already open), so no trigger characters are left behind.
@@ -51,19 +62,23 @@ Type `$/` anywhere in a note and a picker of your library opens; keep typing to 
 - The trigger string is configurable, and the whole feature has an on/off switch.
 - Autocomplete is off on **phones**, where the popup fights the on-screen keyboard. Tablets keep it.
 
-## Storage
+## Storage and sync
 
-Three files, all inside the plugin's own folder — nothing is added to your vault unless you ask for an export.
+| File | Where | Contents |
+| --- | --- | --- |
+| `equations.json` | In your vault, `Equation Library/equations.json` by default | The equation catalog |
+| `data.json` | The plugin's own folder | Plugin settings |
+| `equation-log.jsonl` | The plugin's own folder | One line per committed action |
 
-| File | Contents |
-| --- | --- |
-| `data.json` | Plugin settings |
-| `equations.json` | The equation catalog |
-| `equation-log.jsonl` | One line per committed action |
+**The catalog is an ordinary vault file so that it syncs.** Obsidian Sync, iCloud, Dropbox and friends replicate what is in your vault; they do not carry extra files that live inside a plugin's folder under `.obsidian/`. Keeping `equations.json` in the vault is what makes the same library show up on every machine.
+
+Upgrading from an earlier version moves the catalog for you: the existing `equations.json` is copied out of the plugin folder to the new location on first load, and the original is left behind untouched as a backup. Both the location and the path are settings, so you can put the file wherever suits your vault — or send it back to the plugin folder if you would rather it stayed on one machine.
+
+The log stays local on purpose. It is an append-only record of what you did on *this* machine, and syncing it between machines would only manufacture conflicts.
 
 The log records inserts, library additions, in-place updates and accepted autocompletions — never keystrokes or drafts you did not use. It is capped (100, 500 or 1000 entries, or no limit; 500 by default) and the oldest entries are dropped first, which keeps memory use predictable on mobile.
 
-Those files live in a hidden folder that Obsidian will not open in a tab, so the settings panel has **View JSON** and **View log** buttons that show their contents in a scrollable, read-only window with a copy button.
+`data.json` and the log live in a hidden folder that Obsidian will not open in a tab, so the settings panel has **View JSON** and **View log** buttons that show their contents in a scrollable, read-only window with a copy button.
 
 ## Settings
 
@@ -71,6 +86,8 @@ Those files live in a hidden folder that Obsidian will not open in a tab, so the
 - **Insert format** — inline `$…$` by default, or always block `$$…$$`. Shift always forces block.
 - **Enable autocomplete**, and the **trigger** characters (`$/` by default).
 - **Log size limit** — 100 / 500 / 1000 entries, or no limit.
+- **Catalog location** — keep `equations.json` in the vault, where sync will carry it, or in the plugin folder for this machine only. Switching copies your equations across.
+- **Catalog path** — where in the vault that file goes, `Equation Library/equations.json` by default.
 - **Export catalog** — write a copy of the catalog to any path in your vault.
 - **Import catalog** — paste an exported catalog. Nothing is ever overwritten: a clashing name is suffixed `(2)`, an equation that is already there unchanged is skipped.
 
@@ -85,14 +102,14 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 154 unit tests over the pure core
+npm test        # 163 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
 
 ## How it is put together
 
-- `src/core/` — pure decision logic: search, sorting, category filtering, the catalog model, schema migration, delimiter handling, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
+- `src/core/` — pure decision logic: search, sorting, category filtering, the catalog model, schema migration, delimiter handling and math-span scanning, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
 - `src/ui/mathlive-adapter.ts` — the single point of contact with [MathLive](https://github.com/arnog/mathlive), which is the only math engine used. Replacing it is a one-file change.
 - `src/storage/` — all file access through `vault.adapter`, so it behaves the same on desktop and mobile. Node's `fs` and `path` are not imported anywhere.
 - `src/editor/`, `src/main.ts` — the Obsidian shell: commands, the suggester, the settings tab.
