@@ -120,6 +120,8 @@ export class LibraryModal extends Modal {
 	private latex = "";
 	private insertButtons: ButtonComponent[] = [];
 	private updateButton: ButtonComponent | null = null;
+	private openNoteButton: ButtonComponent | null = null;
+	private searchInput!: HTMLInputElement;
 	/** The equation the generator is editing, or null when building a fresh one. */
 	private editingEquationId: string | null = null;
 	/**
@@ -151,7 +153,7 @@ export class LibraryModal extends Modal {
 		this.buildGenerator(contentEl);
 		this.buildFooter(contentEl);
 		this.registerShortcuts(contentEl);
-		this.focusLatexInput();
+		this.focusSearchInput();
 
 		const win = contentEl.win as Window & typeof globalThis;
 		this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
@@ -163,19 +165,16 @@ export class LibraryModal extends Modal {
 	}
 
 	/**
-	 * Puts the caret in the LaTeX source field, where typing belongs.
+	 * Puts the caret in the Search Equations field, so typing filters the grid.
 	 *
-	 * Obsidian focuses the modal's first tabbable element — the search box —
-	 * after `onOpen` returns, so focusing once here is undone a moment later.
-	 * The deferred second call runs after that, and re-checks the field is
-	 * still on screen in case the modal was closed in between.
+	 * Obsidian moves focus after `onOpen` returns, so focusing once here can be
+	 * undone a moment later. The deferred calls run after that, and re-check the
+	 * field is still on screen in case the modal was closed in between.
 	 */
-	private focusLatexInput(): void {
+	private focusSearchInput(): void {
 		const focus = () => {
-			if (!this.latexInput.isConnected) return;
-			this.latexInput.focus();
-			const end = this.latexInput.value.length;
-			this.latexInput.setSelectionRange(end, end);
+			if (!this.searchInput.isConnected) return;
+			this.searchInput.focus();
 		};
 		focus();
 		const win = this.contentEl.win as Window & typeof globalThis;
@@ -218,6 +217,7 @@ export class LibraryModal extends Modal {
 		this.mathField = null;
 		this.insertButtons = [];
 		this.updateButton = null;
+		this.openNoteButton = null;
 		hideVirtualKeyboard();
 		this.contentEl.empty();
 	}
@@ -228,6 +228,7 @@ export class LibraryModal extends Modal {
 		const bar = parent.createDiv({ cls: "eqlib-toolbar" });
 
 		const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
+		this.searchInput = search;
 		search.placeholder = "Search equations";
 		search.addEventListener("input", () => {
 			this.searchText = search.value;
@@ -391,6 +392,15 @@ export class LibraryModal extends Modal {
 			.onClick(() => void this.onUpdateEquation());
 		this.updateButton.buttonEl.hide();
 
+		this.openNoteButton = new ButtonComponent(buttons)
+			.setButtonText("Open note")
+			.setIcon("file-text")
+			.setTooltip("Open this equation's note.")
+			.onClick(() => {
+				if (this.editingEquationId !== null) void this.openEquationNote(this.editingEquationId);
+			});
+		this.openNoteButton.buttonEl.hide();
+
 		// "Add to Library" stays available with no editor open; the two insert
 		// actions cannot work without one and say so.
 		if (this.editor === null) {
@@ -476,6 +486,7 @@ export class LibraryModal extends Modal {
 		this.generatorCategoryEl.value = equation.category;
 		this.editingEquationId = equation.id;
 		this.updateButton?.buttonEl.show();
+		this.openNoteButton?.buttonEl.show();
 	}
 
 	private syncCategorySelectors(): void {
@@ -798,6 +809,7 @@ export class LibraryModal extends Modal {
 		this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
 		this.editingEquationId = null;
 		this.updateButton?.buttonEl.hide();
+		this.openNoteButton?.buttonEl.hide();
 	}
 
 	// ------------------------------------------------------------ catalogue
@@ -809,12 +821,7 @@ export class LibraryModal extends Modal {
 			item
 				.setTitle("Open note")
 				.setIcon("file-text")
-				.onClick(() => {
-					void this.deps.openNote(equation.id).then((opened) => {
-						if (!opened) new Notice("That note no longer exists.");
-						else this.close();
-					});
-				}),
+				.onClick(() => void this.openEquationNote(equation.id)),
 		);
 		if (this.editor) {
 			menu.addItem((item) =>
@@ -864,6 +871,11 @@ export class LibraryModal extends Modal {
 				}),
 		);
 		menu.showAtMouseEvent(event);
+	}
+
+	private async openEquationNote(id: string): Promise<void> {
+		if (await this.deps.openNote(id)) this.close();
+		else new Notice("That note no longer exists.");
 	}
 
 	private async duplicateEquation(equation: Equation): Promise<void> {

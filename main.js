@@ -17399,6 +17399,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.latex = "";
     this.insertButtons = [];
     this.updateButton = null;
+    this.openNoteButton = null;
     /** The equation the generator is editing, or null when building a fresh one. */
     this.editingEquationId = null;
     /**
@@ -17425,7 +17426,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.buildGenerator(contentEl);
     this.buildFooter(contentEl);
     this.registerShortcuts(contentEl);
-    this.focusLatexInput();
+    this.focusSearchInput();
     const win = contentEl.win;
     this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
       root: this.scrollEl,
@@ -17434,19 +17435,16 @@ var LibraryModal = class extends import_obsidian5.Modal {
     void this.refreshCatalog();
   }
   /**
-   * Puts the caret in the LaTeX source field, where typing belongs.
+   * Puts the caret in the Search Equations field, so typing filters the grid.
    *
-   * Obsidian focuses the modal's first tabbable element — the search box —
-   * after `onOpen` returns, so focusing once here is undone a moment later.
-   * The deferred second call runs after that, and re-checks the field is
-   * still on screen in case the modal was closed in between.
+   * Obsidian moves focus after `onOpen` returns, so focusing once here can be
+   * undone a moment later. The deferred calls run after that, and re-check the
+   * field is still on screen in case the modal was closed in between.
    */
-  focusLatexInput() {
+  focusSearchInput() {
     const focus = () => {
-      if (!this.latexInput.isConnected) return;
-      this.latexInput.focus();
-      const end = this.latexInput.value.length;
-      this.latexInput.setSelectionRange(end, end);
+      if (!this.searchInput.isConnected) return;
+      this.searchInput.focus();
     };
     focus();
     const win = this.contentEl.win;
@@ -17484,6 +17482,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.mathField = null;
     this.insertButtons = [];
     this.updateButton = null;
+    this.openNoteButton = null;
     hideVirtualKeyboard();
     this.contentEl.empty();
   }
@@ -17491,6 +17490,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
   buildToolbar(parent) {
     const bar = parent.createDiv({ cls: "eqlib-toolbar" });
     const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
+    this.searchInput = search;
     search.placeholder = "Search equations";
     search.addEventListener("input", () => {
       this.searchText = search.value;
@@ -17614,6 +17614,10 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.insertButtons = [insertButton, addInsertButton];
     this.updateButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Update").setTooltip("Save these changes back to the equation loaded from the library.").onClick(() => void this.onUpdateEquation());
     this.updateButton.buttonEl.hide();
+    this.openNoteButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Open note").setIcon("file-text").setTooltip("Open this equation's note.").onClick(() => {
+      if (this.editingEquationId !== null) void this.openEquationNote(this.editingEquationId);
+    });
+    this.openNoteButton.buttonEl.hide();
     if (this.editor === null) {
       for (const button of this.insertButtons) {
         button.setDisabled(true);
@@ -17677,7 +17681,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
   }
   /** Makes the generator edit `equation` in place: fields filled, Update shown. */
   adoptEquation(equation) {
-    var _a2, _b2, _c2;
+    var _a2, _b2, _c2, _d2;
     this.nameInput.value = equation.name;
     this.symbolInput.value = (_a2 = equation.symbol) != null ? _a2 : "";
     this.noteInput.value = (_b2 = equation.note) != null ? _b2 : "";
@@ -17685,6 +17689,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.generatorCategoryEl.value = equation.category;
     this.editingEquationId = equation.id;
     (_c2 = this.updateButton) == null ? void 0 : _c2.buttonEl.show();
+    (_d2 = this.openNoteButton) == null ? void 0 : _d2.buttonEl.show();
   }
   syncCategorySelectors() {
     const filter = this.contentEl.querySelector(".eqlib-category-filter");
@@ -17946,7 +17951,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.finishInsert();
   }
   async onUpdateEquation() {
-    var _a2;
+    var _a2, _b2;
     const id2 = this.editingEquationId;
     if (!id2) return;
     const latex = this.currentLatex();
@@ -17975,18 +17980,14 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
     this.editingEquationId = null;
     (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.hide();
+    (_b2 = this.openNoteButton) == null ? void 0 : _b2.buttonEl.hide();
   }
   // ------------------------------------------------------------ catalogue
   showTileMenu(equation, event) {
     event.preventDefault();
     const menu = new import_obsidian5.Menu();
     menu.addItem(
-      (item) => item.setTitle("Open note").setIcon("file-text").onClick(() => {
-        void this.deps.openNote(equation.id).then((opened) => {
-          if (!opened) new import_obsidian5.Notice("That note no longer exists.");
-          else this.close();
-        });
-      })
+      (item) => item.setTitle("Open note").setIcon("file-text").onClick(() => void this.openEquationNote(equation.id))
     );
     if (this.editor) {
       menu.addItem(
@@ -18018,6 +18019,10 @@ var LibraryModal = class extends import_obsidian5.Modal {
       })
     );
     menu.showAtMouseEvent(event);
+  }
+  async openEquationNote(id2) {
+    if (await this.deps.openNote(id2)) this.close();
+    else new import_obsidian5.Notice("That note no longer exists.");
   }
   async duplicateEquation(equation) {
     const result = addEquation(this.catalog, {
