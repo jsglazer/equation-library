@@ -16,7 +16,7 @@ Run **Show Equation Library** from the command palette, or click the sigma icon 
 
 | Action | Result |
 | --- | --- |
-| Click a tile | Loads the equation into the generator for editing, and reveals an **Update** button to save changes back to its note |
+| Click a tile | Loads the equation into the generator for editing, and reveals **Update** and **Open note** buttons |
 | Double-click a tile | Inserts it at the cursor as inline math, `$…$` |
 | Shift + double-click | Inserts it as a block equation, `$$…$$` |
 | Alt/Option + double-click | Inserts it with its symbol, `$E_p = …$` |
@@ -24,7 +24,7 @@ Run **Show Equation Library** from the command palette, or click the sigma icon 
 
 Search, filter by category and by usage tag, and sort by name, newest or recently changed from the toolbar. Search reads names first, then the note field, the LaTeX, the symbol, usage tags and source, and finally the note's body and any other frontmatter, so "the one about damped oscillation" is findable even when the name says `x(t)`. The three buttons on the right create, rename and delete categories. The usage filter appears only when at least one note carries a usage tag.
 
-**Bottom panel — the generator.** The cursor starts in the plain LaTeX source box, which is the only editable field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. Next to the preview, a **Copy PNG** button rasterizes the current equation and puts it on the clipboard as an image.
+**Bottom panel — the generator.** The popup opens with the cursor in the **Search equations** box, so you can start typing to filter the library straight away. The plain LaTeX source box is the only editable equation field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. Next to the preview, a **Copy PNG** button rasterizes the current equation and puts it on the clipboard as an image.
 
 Alongside the name and category sit an optional **Symbol** — the left-hand side, as LaTeX, so tiles read `\bar{x} = …` — and an optional **Note**, free text for what an equation is for or which convention it follows. Both are saved by **Add to Library** and **Update**, come back when you click the tile again, and travel with the equation through export and import.
 
@@ -34,6 +34,7 @@ Alongside the name and category sit an optional **Symbol** — the left-hand sid
 | Add to Library | Creates a new equation note under the chosen name and category |
 | Add & Insert | Both, in that order |
 | Update *(after clicking a tile)* | Saves the generator's current name, symbol, LaTeX, category and note back to that same note, in place |
+| Open note *(after clicking a tile)* | Opens that equation's note and closes the popup |
 
 Adding an equation whose LaTeX is already in the library does not make a copy: the existing note is loaded for editing instead, so a second click on **Add to Library** is harmless, and **Add & Insert** still inserts it.
 
