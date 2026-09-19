@@ -12,6 +12,38 @@ import { InsertFormat } from "./latex";
 import { DEFAULT_LOG_CAP, LOG_CAPS, LogCap } from "./log";
 import { SortOrder } from "./search";
 import { DEFAULT_TRIGGER } from "./suggest";
+import { UNCATEGORIZED } from "./types";
+
+/**
+ * The frontmatter keys the plugin reads and writes in an equation note. Every
+ * other key in the note is left exactly as it was.
+ */
+export interface FrontmatterKeys {
+	/** The display name. Falls back to the file name when absent. */
+	readonly name: string;
+	/** The LaTeX, stored `$…$`-wrapped so inline Dataview fields render it. */
+	readonly latex: string;
+	/** The left-hand symbol, also `$…$`-wrapped. */
+	readonly symbol: string;
+	/** Single-valued category. Missing or blank means Uncategorized. */
+	readonly category: string;
+	/** The free-text note shown in the generator. */
+	readonly note: string;
+	/** Multi-valued tags; read for the Usage filter, never written. */
+	readonly usage: string;
+	/** Where the equation came from; read for search, never written. */
+	readonly source: string;
+}
+
+export const DEFAULT_KEYS: FrontmatterKeys = {
+	name: "Name",
+	latex: "Eq",
+	symbol: "Smb",
+	category: "Category",
+	note: "Note",
+	usage: "Usage",
+	source: "Source",
+};
 
 export interface EquationLibrarySettings {
 	/** Close the library popup after an insert. */
@@ -28,21 +60,28 @@ export interface EquationLibrarySettings {
 	/** Category filter remembered between library sessions; `null` is "all". */
 	readonly lastCategory: string | null;
 	/**
-	 * Where `equations.json` lives.
-	 *
-	 * `vault` keeps it as an ordinary file inside the vault, which is what every
-	 * sync engine actually replicates. `plugin` is the original location under
-	 * `.obsidian/plugins/`, which Obsidian Sync does not carry between machines
-	 * unless the whole plugin folder is synced.
+	 * Vault-relative folder whose Markdown notes make up the library. A note
+	 * counts as an equation when its frontmatter has the LaTeX key.
 	 */
-	readonly catalogLocation: CatalogLocation;
-	/** Vault-relative path used when `catalogLocation` is `vault`. */
-	readonly catalogPath: string;
+	readonly libraryFolder: string;
+	/**
+	 * Optional vault-relative path of a note used as the scaffold for new
+	 * equation notes: its frontmatter keys are copied (blank where the value is
+	 * a Templater tag) and its body becomes the new note's body.
+	 */
+	readonly templatePath: string;
+	/** Prefix for new note file names, e.g. `eq-` gives `eq-Bayes-Theorem.md`. */
+	readonly filePrefix: string;
+	readonly keys: FrontmatterKeys;
+	/**
+	 * Categories that exist even when no note carries them, so a category can
+	 * be created before its first equation. The reserved one is never stored.
+	 */
+	readonly categories: readonly string[];
 }
 
-export type CatalogLocation = "vault" | "plugin";
-
-export const DEFAULT_CATALOG_PATH = "Equation Library/equations.json";
+export const DEFAULT_LIBRARY_FOLDER = "Equation Library";
+export const DEFAULT_FILE_PREFIX = "eq-";
 
 export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	closeOnInsert: true,
@@ -52,23 +91,59 @@ export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	logCap: DEFAULT_LOG_CAP,
 	sortOrder: "name",
 	lastCategory: null,
-	catalogLocation: "vault",
-	catalogPath: DEFAULT_CATALOG_PATH,
+	libraryFolder: DEFAULT_LIBRARY_FOLDER,
+	templatePath: "",
+	filePrefix: DEFAULT_FILE_PREFIX,
+	keys: DEFAULT_KEYS,
+	categories: [],
 };
 
 const SORT_ORDERS: readonly SortOrder[] = ["name", "created", "modified"];
 const INSERT_FORMATS: readonly InsertFormat[] = ["inline", "always-block"];
-const CATALOG_LOCATIONS: readonly CatalogLocation[] = ["vault", "plugin"];
 
 /**
- * Trims a user-supplied catalog path and rejects anything that would escape the
- * vault or name no file at all; the default stands in for those.
+ * Trims a user-supplied vault path and rejects anything that would escape the
+ * vault; `fallback` stands in for an empty or unsafe value.
  */
-export function normalizeCatalogPath(raw: unknown): string {
-	if (typeof raw !== "string") return DEFAULT_CATALOG_PATH;
-	const path = raw.trim().replace(/^\/+/, "");
-	if (path.length === 0 || path.split("/").includes("..")) return DEFAULT_CATALOG_PATH;
+export function normalizeVaultPath(raw: unknown, fallback: string): string {
+	if (typeof raw !== "string") return fallback;
+	const path = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+	if (path.length === 0 || path.split("/").includes("..")) return fallback;
 	return path;
+}
+
+/** A frontmatter key: trimmed, no colon, non-empty; else the default. */
+function normalizeKey(raw: unknown, fallback: string): string {
+	if (typeof raw !== "string") return fallback;
+	const key = raw.trim();
+	if (key.length === 0 || key.includes(":") || /^\s|\s$/.test(key)) return fallback;
+	return key;
+}
+
+export function normalizeKeys(raw: unknown): FrontmatterKeys {
+	const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+	return {
+		name: normalizeKey(record.name, DEFAULT_KEYS.name),
+		latex: normalizeKey(record.latex, DEFAULT_KEYS.latex),
+		symbol: normalizeKey(record.symbol, DEFAULT_KEYS.symbol),
+		category: normalizeKey(record.category, DEFAULT_KEYS.category),
+		note: normalizeKey(record.note, DEFAULT_KEYS.note),
+		usage: normalizeKey(record.usage, DEFAULT_KEYS.usage),
+		source: normalizeKey(record.source, DEFAULT_KEYS.source),
+	};
+}
+
+/** Stored categories: strings only, trimmed, deduplicated, never the reserved one. */
+export function normalizeCategories(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	const seen = new Set<string>();
+	for (const value of raw) {
+		if (typeof value !== "string") continue;
+		const category = value.trim();
+		if (category.length === 0 || category === UNCATEGORIZED) continue;
+		seen.add(category);
+	}
+	return [...seen];
 }
 
 function pickBoolean(value: unknown, fallback: boolean): boolean {
@@ -88,6 +163,7 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 	const record = raw as Record<string, unknown>;
 
 	const trigger = typeof record.suggestTrigger === "string" ? record.suggestTrigger.trim() : "";
+	const prefix = typeof record.filePrefix === "string" ? record.filePrefix.trim() : DEFAULT_FILE_PREFIX;
 	return {
 		closeOnInsert: pickBoolean(record.closeOnInsert, DEFAULT_SETTINGS.closeOnInsert),
 		insertFormat: pickFrom(record.insertFormat, INSERT_FORMATS, DEFAULT_SETTINGS.insertFormat),
@@ -99,8 +175,12 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 		lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0
 			? record.lastCategory
 			: null,
-		catalogLocation: pickFrom(record.catalogLocation, CATALOG_LOCATIONS, DEFAULT_SETTINGS.catalogLocation),
-		catalogPath: normalizeCatalogPath(record.catalogPath),
+		libraryFolder: normalizeVaultPath(record.libraryFolder, DEFAULT_LIBRARY_FOLDER),
+		templatePath: normalizeVaultPath(record.templatePath, ""),
+		// An empty prefix is a legitimate choice; only a path separator is refused.
+		filePrefix: prefix.includes("/") ? DEFAULT_FILE_PREFIX : prefix,
+		keys: normalizeKeys(record.keys),
+		categories: normalizeCategories(record.categories),
 	};
 }
 

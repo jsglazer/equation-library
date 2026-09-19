@@ -154,6 +154,12 @@
 	min-width: 8rem;
 }
 
+.eqlib-symbol {
+	flex: 0 1 9rem;
+	min-width: 6rem;
+	font-family: var(--font-monospace);
+}
+
 .eqlib-mathfield-header {
 	display: flex;
 	align-items: center;

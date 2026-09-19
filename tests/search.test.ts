@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	allUsages,
 	filterByCategory,
+	filterByUsage,
 	matchSuggestions,
 	normalize,
 	scoreEquation,
@@ -142,5 +144,33 @@ describe("matchSuggestions", () => {
 
 	it("returns everything when the limit is zero or negative", () => {
 		expect(matchSuggestions(CATALOG.equations, "", 0)).toHaveLength(4);
+	});
+});
+
+describe("usage tags and note text", () => {
+	const tagged = equation({ id: "t", name: "SE of the mean", latex: "s/\\sqrt{n}", symbol: "SE", usage: ["Inference", "CI"], source: "OpenStax", text: "uses the t table" });
+	const plain = equation({ id: "p", name: "Plain", latex: "y" });
+
+	it("filters by tag, ignoring case", () => {
+		expect(filterByUsage([tagged, plain], "ci").map((e) => e.id)).toEqual(["t"]);
+		expect(filterByUsage([tagged, plain], null)).toHaveLength(2);
+		expect(searchEquations([tagged, plain], { text: "", category: null, usage: "Inference", sort: "name" }).map((e) => e.id)).toEqual(["t"]);
+	});
+
+	it("lists distinct tags sorted", () => {
+		expect(allUsages([tagged, plain, equation({ id: "u", name: "U", latex: "z", usage: ["ci", "Sets"] })])).toEqual(["CI", "Inference", "Sets"]);
+	});
+
+	it("ranks symbol, tags and source below LaTeX, and body text last", () => {
+		expect(scoreEquation(tagged, "SE")).toBe(1);
+		expect(scoreEquation(tagged, "inference")).toBe(7);
+		expect(scoreEquation(tagged, "openstax")).toBe(7);
+		expect(scoreEquation(tagged, "t table")).toBe(8);
+	});
+
+	it("keeps the autocomplete to names and LaTeX", () => {
+		expect(scoreEquation(tagged, "inference", false)).toBeNull();
+		expect(scoreEquation(tagged, "t table", false)).toBeNull();
+		expect(scoreEquation(tagged, "sqrt", false)).toBe(6);
 	});
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeCatalog, parseCatalog, serializeCatalog } from "../src/core/import-export";
+import { mergeCatalog, parseCatalog, planImport, serializeCatalog } from "../src/core/import-export";
 import { createCatalog } from "../src/core/catalog";
 import { expectOk, mockCatalog } from "./fixtures";
 
@@ -83,5 +83,38 @@ describe("serializeCatalog", () => {
 		const text = serializeCatalog(catalog);
 		expect(text.endsWith("\n")).toBe(true);
 		expect(JSON.parse(text)).toEqual(catalog);
+	});
+});
+
+describe("planImport", () => {
+	it("creates every equation into an empty library", () => {
+		const plan = planImport(createCatalog(), mockCatalog());
+		expect(plan.toCreate).toHaveLength(4);
+		expect(plan.skipped).toEqual([]);
+	});
+
+	it("skips by LaTeX, whatever the id or name says", () => {
+		const incoming = {
+			...mockCatalog(),
+			equations: [{ ...mockCatalog().equations[0], id: "other", name: "Renamed" }],
+		};
+		const plan = planImport(mockCatalog(), incoming);
+		expect(plan.toCreate).toEqual([]);
+		expect(plan.skipped).toEqual(["Renamed"]);
+	});
+
+	it("disambiguates a clashing name and de-duplicates within the import itself", () => {
+		const fresh = { ...mockCatalog().equations[0], id: "n1", latex: "brand new" };
+		const twin = { ...fresh, id: "n2" };
+		const plan = planImport(mockCatalog(), { ...createCatalog(), equations: [fresh, twin] });
+		expect(plan.toCreate.map((e) => e.name)).toEqual(["Quadratic Formula (2)"]);
+		expect(plan.skipped).toEqual(["Quadratic Formula"]);
+	});
+});
+
+describe("serializeCatalog with search text", () => {
+	it("drops the derived text field", () => {
+		const catalog = { ...mockCatalog(), equations: [{ ...mockCatalog().equations[0], text: "body" }] };
+		expect(JSON.parse(serializeCatalog(catalog)).equations[0]).not.toHaveProperty("text");
 	});
 });

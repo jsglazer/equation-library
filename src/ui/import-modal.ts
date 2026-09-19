@@ -1,18 +1,15 @@
 /**
- * Import: paste a catalog JSON blob, validate it, merge it into the current
- * catalog. Validation runs in the pure core (`parseCatalog`), which returns a
- * result object carrying errors rather than throwing, so a bad paste produces a
- * message instead of an exception.
+ * Import: paste a catalog JSON blob and validate it. Validation runs in the
+ * pure core (`parseCatalog`), which returns a result object carrying errors
+ * rather than throwing, so a bad paste produces a message instead of an
+ * exception. Deciding which equations become notes is the caller's job.
  */
 import { App, Modal, Setting } from "obsidian";
 import { Catalog } from "../core/types";
-import { mergeCatalog, parseCatalog } from "../core/import-export";
+import { parseCatalog } from "../core/import-export";
 
-export interface ImportResultSummary {
+export interface ParsedImport {
 	readonly catalog: Catalog;
-	readonly added: number;
-	readonly renamed: number;
-	readonly skipped: number;
 	readonly warnings: readonly string[];
 }
 
@@ -21,9 +18,7 @@ export class ImportModal extends Modal {
 
 	constructor(
 		app: App,
-		private readonly current: Catalog,
-		private readonly mintId: () => string,
-		private readonly onImport: (summary: ImportResultSummary) => void,
+		private readonly onParsed: (parsed: ParsedImport) => void,
 	) {
 		super(app);
 	}
@@ -34,7 +29,7 @@ export class ImportModal extends Modal {
 		contentEl.empty();
 		contentEl.createEl("h2", { text: "Import equations" });
 		contentEl.createEl("p", {
-			text: "Paste an exported catalog below. Existing equations are never overwritten: a clashing name is suffixed, and an equation that is already present unchanged is skipped.",
+			text: "Paste an exported catalog below. Each equation becomes a note in the library folder. Nothing is overwritten: an equation whose LaTeX is already in the library is skipped, and a clashing name is suffixed.",
 		});
 
 		const error = contentEl.createEl("p", { cls: "eqlib-error" });
@@ -61,15 +56,8 @@ export class ImportModal extends Modal {
 							error.show();
 							return;
 						}
-						const report = mergeCatalog(this.current, parsed.value.catalog, () => this.mintId());
 						this.close();
-						this.onImport({
-							catalog: report.catalog,
-							added: report.added,
-							renamed: report.renamed,
-							skipped: report.skipped,
-							warnings: parsed.value.warnings,
-						});
+						this.onParsed({ catalog: parsed.value.catalog, warnings: parsed.value.warnings });
 					}),
 			);
 	}

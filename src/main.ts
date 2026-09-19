@@ -1,18 +1,19 @@
 /**
  * Equation Library — plugin entry point.
  *
- * This file wires Obsidian to the pure core: it owns the catalog in memory,
- * serializes every write through `PluginStore`, and registers the command, the
- * settings tab and the editor suggester. All decision logic lives under
+ * This file wires Obsidian to the pure core: it owns the note store that reads
+ * and writes the library folder, the log store, and registers the command,
+ * the settings tab and the editor suggester. All decision logic lives under
  * `src/core/`; nothing here reads Node's `fs` or `path`.
  */
-import { Editor, MarkdownFileInfo, MarkdownView, Menu, Notice, Plugin, Platform, TFile } from "obsidian";
+import { Editor, MarkdownFileInfo, MarkdownView, Menu, Notice, Plugin, Platform, TAbstractFile } from "obsidian";
 import { Catalog, LogAction } from "./core/types";
-import { CatalogLocation, DEFAULT_SETTINGS, EquationLibrarySettings, normalizeCatalogPath, normalizeSettings } from "./core/settings";
+import { DEFAULT_SETTINGS, EquationLibrarySettings, normalizeSettings } from "./core/settings";
 import { findMathSpanAt } from "./core/latex";
 import { createLogEntry } from "./core/log";
-import { serializeCatalog } from "./core/import-export";
-import { PluginStore } from "./storage/plugin-store";
+import { planImport, serializeCatalog } from "./core/import-export";
+import { LogStore } from "./storage/log-store";
+import { NoteStore } from "./storage/note-store";
 import { EquationSuggest } from "./editor/equation-suggest";
 import { GeneratorPrefill, LibraryModal, LogRequest } from "./ui/library-modal";
 import { ViewFileModal } from "./ui/view-file-modal";
@@ -25,10 +26,8 @@ const DEFAULT_EXPORT_PATH = "equation-library-export.json";
 
 export default class EquationLibraryPlugin extends Plugin {
 	settings: EquationLibrarySettings = DEFAULT_SETTINGS;
-	store!: PluginStore;
-
-	/** The catalog as last read from disk, re-read whenever the modal opens. */
-	private catalog: Catalog | null = null;
+	noteStore!: NoteStore;
+	logStore!: LogStore;
 
 	/**
 	 * The most recent right-click, used to find the equation under the pointer.
@@ -40,16 +39,14 @@ export default class EquationLibraryPlugin extends Plugin {
 	private lastContextMenu: MouseEvent | null = null;
 
 	async onload(): Promise<void> {
-		this.settings = normalizeSettings(await this.loadData());
-		this.store = new PluginStore(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
-		this.store.setCatalogTarget({
-			location: this.settings.catalogLocation,
-			vaultPath: this.settings.catalogPath,
+		const raw: unknown = await this.loadData();
+		this.settings = normalizeSettings(raw);
+		this.logStore = new LogStore(this.app.vault.adapter, this.app.vault.configDir, this.manifest.id);
+		this.noteStore = new NoteStore(this.app, {
+			getSettings: () => this.settings,
+			saveCategories: (categories) => this.updateSettings({ categories }),
 		});
-		// An install that predates the vault-relative catalog still has its
-		// equations under `.obsidian/plugins/`; lift them out so sync sees them.
-		const migrated = await this.store.migrateCatalogToTarget();
-		if (migrated !== null) new Notice(`Equation Library: moved the catalog to ${migrated} so it syncs with the vault.`);
+		this.noticeLegacyCatalog(raw);
 
 		configureMathLive({ virtualKeyboard: Platform.isMobile });
 
@@ -81,19 +78,23 @@ export default class EquationLibraryPlugin extends Plugin {
 			}),
 		);
 
-		// A catalog kept in the vault is replaced wholesale by sync; re-read it so
-		// the autocomplete does not keep serving the pre-sync list.
-		this.registerEvent(
-			this.app.vault.on("modify", (file) => {
-				if (!(file instanceof TFile) || file.path !== this.store.catalogPath) return;
-				void this.reloadCatalog();
-			}),
-		);
+		// The library is whatever the notes say right now. Any change under the
+		// folder — an edit, a sync, a rename, a deletion — drops the cached
+		// listing so the autocomplete never serves a stale one.
+		const touched = (file: TAbstractFile, oldPath?: string) => {
+			if (this.noteStore.isLibraryPath(file.path) || (oldPath !== undefined && this.noteStore.isLibraryPath(oldPath))) {
+				this.noteStore.invalidate();
+			}
+		};
+		this.registerEvent(this.app.metadataCache.on("changed", (file) => touched(file)));
+		this.registerEvent(this.app.metadataCache.on("deleted", (file) => touched(file)));
+		this.registerEvent(this.app.vault.on("rename", (file, oldPath) => touched(file, oldPath)));
+		this.registerEvent(this.app.vault.on("create", (file) => touched(file)));
 
 		this.registerEditorSuggest(
 			new EquationSuggest(this.app, {
 				getSettings: () => this.settings,
-				getEquations: () => this.catalog?.equations ?? [],
+				getEquations: () => this.noteStore.listEquations(),
 				onAccept: (equation) => {
 					this.log({
 						action: "autocomplete-accept",
@@ -106,9 +107,6 @@ export default class EquationLibraryPlugin extends Plugin {
 		);
 
 		this.addSettingTab(new EquationLibrarySettingTab(this.app, this));
-
-		// The suggester needs a catalog before the modal has ever been opened.
-		void this.reloadCatalog();
 	}
 
 	onunload(): void {
@@ -119,6 +117,23 @@ export default class EquationLibraryPlugin extends Plugin {
 		removeMathLiveStyles();
 	}
 
+	/**
+	 * An install upgraded from 1.0.x still has its `equations.json`. It is not
+	 * read any more; the user is told once where the import lives, and the old
+	 * settings keys are dropped on the next save.
+	 */
+	private noticeLegacyCatalog(raw: unknown): void {
+		if (typeof raw !== "object" || raw === null) return;
+		const record = raw as Record<string, unknown>;
+		if (!("catalogPath" in record) && !("catalogLocation" in record)) return;
+		const path = typeof record.catalogPath === "string" ? record.catalogPath : "equations.json";
+		new Notice(
+			`Equation Library now keeps equations as notes in "${this.settings.libraryFolder}". Your old ${path} is no longer read — paste it into Settings → Import to turn it into notes.`,
+			15000,
+		);
+		void this.saveData(this.settings);
+	}
+
 	async updateSettings(patch: Partial<EquationLibrarySettings>): Promise<void> {
 		this.settings = normalizeSettings({ ...this.settings, ...patch });
 		// Settings live in data.json and go through saveData only; the vault
@@ -127,14 +142,7 @@ export default class EquationLibraryPlugin extends Plugin {
 	}
 
 	async recapLog(): Promise<void> {
-		await this.store.recapLog(this.settings.logCap);
-	}
-
-	private async reloadCatalog(): Promise<Catalog> {
-		const load = await this.store.loadCatalog();
-		this.catalog = load.catalog;
-		for (const warning of load.warnings) new Notice(`Equation Library: ${warning}`);
-		return load.catalog;
+		await this.logStore.recapLog(this.settings.logCap);
 	}
 
 	/**
@@ -167,31 +175,21 @@ export default class EquationLibraryPlugin extends Plugin {
 		return editor.posToOffset(editor.getCursor());
 	}
 
-	/** Repoints the catalog at a new location, carrying the equations across. */
-	async moveCatalog(location: CatalogLocation, rawPath: string): Promise<void> {
-		const catalogPath = normalizeCatalogPath(rawPath);
-		const current = this.catalog ?? (await this.reloadCatalog());
-		await this.updateSettings({ catalogLocation: location, catalogPath });
-		this.store.setCatalogTarget({ location, vaultPath: catalogPath });
-		await this.store.saveCatalog(current);
-		new Notice(`Equation Library: catalog now at ${this.store.catalogPath}.`);
-	}
-
 	private openLibrary(prefill?: GeneratorPrefill): void {
+		const fromPath = this.app.workspace.getActiveFile()?.path ?? "";
 		new LibraryModal(this.app, {
 			prefill,
 			version: this.manifest.version,
 			getSettings: () => this.settings,
 			saveSettings: (patch) => this.updateSettings(patch),
-			// Re-read from disk on every open, so a catalog changed by Obsidian
-			// Sync or by hand is picked up. Conflicts are last-write-wins.
-			loadCatalog: () => this.reloadCatalog(),
-			saveCatalog: async (catalog) => {
-				this.catalog = catalog;
-				await this.store.saveCatalog(catalog);
-			},
+			// Re-read from the notes on every open, so a note changed by hand or
+			// by sync is picked up. Conflicts are last-write-wins.
+			loadCatalog: () => this.noteStore.loadCatalog(),
+			saveCatalog: (previous, next) => this.noteStore.applyCatalog(previous, next),
+			openNote: (id) => this.noteStore.openNote(id, false),
+			linkFor: (id) => this.noteStore.linkFor(id, fromPath),
 			log: (request) => this.log(request),
-			mintId: () => crypto.randomUUID(),
+			mintId: () => `new:${crypto.randomUUID()}`,
 			now: () => new Date().toISOString(),
 			isMobile: Platform.isMobile,
 		}).open();
@@ -200,26 +198,16 @@ export default class EquationLibraryPlugin extends Plugin {
 	/** Queues one log entry. Fire-and-forget: a log failure never blocks an edit. */
 	private log(request: LogRequest & { action: LogAction }): void {
 		const entry = createLogEntry({ ...request, now: new Date().toISOString() });
-		void this.store.appendLog(entry, this.settings.logCap).catch((error: unknown) => {
+		void this.logStore.appendLog(entry, this.settings.logCap).catch((error: unknown) => {
 			new Notice(`Equation Library: could not write the log (${String(error)}).`);
 		});
 	}
 
-	async showCatalogFile(): Promise<void> {
-		const contents = await this.store.readCatalogText();
-		new ViewFileModal(this.app, {
-			title: "Equation library",
-			path: this.store.catalogPath,
-			contents,
-			emptyMessage: "No equations have been saved yet, so this file does not exist.",
-		}).open();
-	}
-
 	async showLogFile(): Promise<void> {
-		const contents = await this.store.readLogText();
+		const contents = await this.logStore.readLogText();
 		new ViewFileModal(this.app, {
 			title: "Equation log",
-			path: this.store.logPath,
+			path: this.logStore.logPath,
 			contents,
 			emptyMessage: "Nothing has been inserted or saved yet, so the log is empty.",
 		}).open();
@@ -229,7 +217,7 @@ export default class EquationLibraryPlugin extends Plugin {
 		new PromptModal(
 			this.app,
 			{
-				title: "Export catalog",
+				title: "Export library",
 				placeholder: DEFAULT_EXPORT_PATH,
 				initialValue: DEFAULT_EXPORT_PATH,
 				cta: "Export",
@@ -237,8 +225,8 @@ export default class EquationLibraryPlugin extends Plugin {
 			},
 			(value) => {
 				void (async () => {
-					const catalog = this.catalog ?? (await this.reloadCatalog());
-					const path = await this.store.writeVaultFile(value.trim(), serializeCatalog(catalog));
+					const catalog: Catalog = await this.noteStore.loadCatalog();
+					const path = await this.logStore.writeVaultFile(value.trim(), serializeCatalog(catalog));
 					new Notice(`Exported ${catalog.equations.length} equations to ${path}.`);
 				})();
 			},
@@ -246,24 +234,18 @@ export default class EquationLibraryPlugin extends Plugin {
 	}
 
 	async promptImport(): Promise<void> {
-		const catalog = await this.reloadCatalog();
-		new ImportModal(
-			this.app,
-			catalog,
-			() => crypto.randomUUID(),
-			(summary) => {
-				void (async () => {
-					this.catalog = summary.catalog;
-					await this.store.saveCatalog(summary.catalog);
-					for (const warning of summary.warnings) new Notice(`Equation Library: ${warning}`);
-					new Notice(
-						`Imported ${summary.added} equation${summary.added === 1 ? "" : "s"}` +
-							(summary.renamed > 0 ? `, ${summary.renamed} renamed` : "") +
-							(summary.skipped > 0 ? `, ${summary.skipped} already present` : "") +
-							".",
-					);
-				})();
-			},
-		).open();
+		new ImportModal(this.app, (parsed) => {
+			void (async () => {
+				const existing = await this.noteStore.loadCatalog();
+				const plan = planImport(existing, parsed.catalog);
+				const created = await this.noteStore.createNotes(plan.toCreate);
+				for (const warning of parsed.warnings) new Notice(`Equation Library: ${warning}`);
+				new Notice(
+					`Imported ${created} equation${created === 1 ? "" : "s"} as notes` +
+						(plan.skipped.length > 0 ? `, ${plan.skipped.length} already in the library` : "") +
+						".",
+				);
+			})();
+		}).open();
 	}
 }

@@ -15,6 +15,8 @@ export interface SearchQuery {
 	readonly text: string;
 	/** `null` means "all categories". */
 	readonly category: string | null;
+	/** A `Usage` tag every result must carry; `null` or absent means "any". */
+	readonly usage?: string | null;
 	readonly sort: SortOrder;
 	/**
 	 * Whether note text counts as a match. The library grid searches notes;
@@ -36,8 +38,11 @@ export function normalize(text: string): string {
  *
  * The tiers are, in order: exact name, name prefix, word-start inside the
  * name, name substring, normalized-name substring (so "quadform" finds
- * "Quadratic Formula"), the note text, then a LaTeX substring match as the
- * last resort. Pass `searchNotes: false` to skip the note tier.
+ * "Quadratic Formula"), the note text, a LaTeX substring match, the symbol,
+ * usage tags and source, and finally the note's other text (body and
+ * unmodelled frontmatter) as the last resort. Pass `searchNotes: false` to
+ * skip the note tier and everything below the LaTeX tier, which is what the
+ * autocomplete does so a common word in a note body never floods the popup.
  */
 export function scoreEquation(equation: Equation, query: string, searchNotes = true): number | null {
 	const q = query.trim().toLowerCase();
@@ -53,6 +58,11 @@ export function scoreEquation(equation: Equation, query: string, searchNotes = t
 	if (nq.length > 0 && normalize(equation.name).includes(nq)) return 4;
 	if (searchNotes && (equation.note ?? "").toLowerCase().includes(q)) return 5;
 	if (equation.latex.toLowerCase().includes(q)) return 6;
+	if (!searchNotes) return null;
+	if ((equation.symbol ?? "").toLowerCase().includes(q)) return 7;
+	if ((equation.usage ?? []).some((tag) => tag.toLowerCase().includes(q))) return 7;
+	if ((equation.source ?? "").toLowerCase().includes(q)) return 7;
+	if ((equation.text ?? "").toLowerCase().includes(q)) return 8;
 	return null;
 }
 
@@ -78,13 +88,32 @@ export function filterByCategory(equations: readonly Equation[], category: strin
 	return equations.filter((e) => e.category === category);
 }
 
+/** Applies the usage-tag filter alone; the comparison ignores case. */
+export function filterByUsage(equations: readonly Equation[], usage: string | null | undefined): Equation[] {
+	if (usage === null || usage === undefined) return equations.slice();
+	const wanted = usage.toLowerCase();
+	return equations.filter((e) => (e.usage ?? []).some((tag) => tag.toLowerCase() === wanted));
+}
+
+/** Every distinct usage tag in the library, sorted, first spelling wins. */
+export function allUsages(equations: readonly Equation[]): string[] {
+	const seen = new Map<string, string>();
+	for (const equation of equations) {
+		for (const tag of equation.usage ?? []) {
+			const key = tag.toLowerCase();
+			if (!seen.has(key)) seen.set(key, tag);
+		}
+	}
+	return [...seen.values()].sort((a, b) => a.localeCompare(b));
+}
+
 /**
  * The library grid's query: category filter, then text ranking, then the
  * chosen sort order. With empty text the ranking tier is constant, so the
  * result is exactly the chosen sort.
  */
 export function searchEquations(equations: readonly Equation[], query: SearchQuery): Equation[] {
-	const scoped = filterByCategory(equations, query.category);
+	const scoped = filterByUsage(filterByCategory(equations, query.category), query.usage);
 	const scored: Array<{ equation: Equation; score: number }> = [];
 	for (const equation of scoped) {
 		const score = scoreEquation(equation, query.text, query.searchNotes !== false);

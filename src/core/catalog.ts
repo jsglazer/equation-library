@@ -25,6 +25,8 @@ export interface NewEquation {
 	readonly category: string;
 	/** Free-text note; blank or absent stores no note at all. */
 	readonly note?: string;
+	/** Left-hand symbol as bare LaTeX; blank or absent stores none. */
+	readonly symbol?: string;
 	/** ISO timestamp; used for both `created` and `modified`. */
 	readonly now: string;
 }
@@ -57,6 +59,22 @@ function noteFields(note: string | undefined): { note?: string } {
 	return trimmed.length > 0 ? { note: trimmed } : {};
 }
 
+/** As `noteFields`, for the symbol: bare LaTeX, absent when blank. */
+function symbolFields(symbol: string | undefined): { symbol?: string } {
+	const bare = stripDelimiters(symbol ?? "");
+	return bare.length > 0 ? { symbol: bare } : {};
+}
+
+/**
+ * The equation whose LaTeX is exactly `latex` (after stripping delimiters), if
+ * any. Used to stop a second "Add to Library" click from saving a copy.
+ */
+export function findByLatex(catalog: Catalog, latex: string): Equation | undefined {
+	const bare = stripDelimiters(latex);
+	if (bare.length === 0) return undefined;
+	return catalog.equations.find((e) => e.latex === bare);
+}
+
 /** Guarantees the reserved category exists and sits first in the list. */
 export function ensureUncategorized(catalog: Catalog): Catalog {
 	const rest = catalog.categories.filter((c) => c !== UNCATEGORIZED);
@@ -76,6 +94,7 @@ export function addEquation(catalog: Catalog, input: NewEquation): Outcome<Catal
 		latex,
 		category,
 		...noteFields(input.note),
+		...symbolFields(input.symbol),
 		created: input.now,
 		modified: input.now,
 	};
@@ -88,7 +107,7 @@ export function addEquation(catalog: Catalog, input: NewEquation): Outcome<Catal
 export function updateEquation(
 	catalog: Catalog,
 	id: string,
-	patch: Partial<Pick<Equation, "name" | "latex" | "category" | "note">>,
+	patch: Partial<Pick<Equation, "name" | "latex" | "category" | "note" | "symbol">>,
 	now: string,
 ): Outcome<Catalog> {
 	const target = catalog.equations.find((e) => e.id === id);
@@ -106,12 +125,14 @@ export function updateEquation(
 	// means "clear it", and the latter has to survive the spread.
 	const carried: MutableEquation = { ...target };
 	delete carried.note;
+	delete carried.symbol;
 	const updated: Equation = {
 		...carried,
 		name: uniqueName(otherNames, name),
 		latex,
 		category,
 		...noteFields(patch.note === undefined ? target.note : patch.note),
+		...symbolFields(patch.symbol === undefined ? target.symbol : patch.symbol),
 		modified: now,
 	};
 	const categories = catalog.categories.includes(category)

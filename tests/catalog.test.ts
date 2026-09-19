@@ -6,6 +6,7 @@ import {
 	createCatalog,
 	deleteCategory,
 	deleteEquation,
+	findByLatex,
 	orderedCategories,
 	renameCategory,
 	uniqueName,
@@ -223,5 +224,26 @@ describe("category listing", () => {
 	it("counts members per category, including empty ones", () => {
 		const catalog = expectOk(addCategory(mockCatalog(), "Empty"));
 		expect(categoryCounts(catalog)).toEqual({ [UNCATEGORIZED]: 1, Algebra: 2, Calculus: 1, Empty: 0 });
+	});
+});
+
+describe("findByLatex", () => {
+	it("matches on bare LaTeX regardless of delimiters", () => {
+		const catalog = mockCatalog();
+		expect(findByLatex(catalog, "$e^{i\\pi} + 1 = 0$")?.id).toBe("eq-euler");
+		expect(findByLatex(catalog, "e^{i\\pi} + 1 = 0")?.id).toBe("eq-euler");
+		expect(findByLatex(catalog, "nothing")).toBeUndefined();
+		expect(findByLatex(catalog, "  ")).toBeUndefined();
+	});
+});
+
+describe("symbol field", () => {
+	it("is stored bare and cleared by a blank patch", () => {
+		const withSymbol = expectOk(addEquation(createCatalog(), { id: "s", name: "S", latex: "x", category: "", symbol: "$E_p$", now: NOW }));
+		expect(withSymbol.equations[0].symbol).toBe("E_p");
+		const kept = expectOk(updateEquation(withSymbol, "s", { name: "T" }, NOW));
+		expect(kept.equations[0].symbol).toBe("E_p");
+		const cleared = expectOk(updateEquation(withSymbol, "s", { symbol: "" }, NOW));
+		expect(cleared.equations[0]).not.toHaveProperty("symbol");
 	});
 });

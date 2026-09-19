@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CATALOG_PATH, DEFAULT_SETTINGS, normalizeSettings } from "../src/core/settings";
+import {
+	DEFAULT_FILE_PREFIX,
+	DEFAULT_KEYS,
+	DEFAULT_LIBRARY_FOLDER,
+	DEFAULT_SETTINGS,
+	normalizeCategories,
+	normalizeKeys,
+	normalizeSettings,
+	normalizeVaultPath,
+} from "../src/core/settings";
 
 describe("normalizeSettings", () => {
 	it("returns the defaults for an empty or non-object payload", () => {
@@ -18,21 +27,33 @@ describe("normalizeSettings", () => {
 			logCap: 1000,
 			sortOrder: "modified",
 			lastCategory: "Algebra",
-			catalogLocation: "plugin",
-			catalogPath: "Math/equations.json",
+			libraryFolder: "Lib/Eq",
+			templatePath: "Templates/equations.md",
+			filePrefix: "eq-",
+			keys: { ...DEFAULT_KEYS, note: "Function" },
+			categories: ["Econ", "Stats"],
 		};
 		expect(normalizeSettings(stored)).toEqual(stored);
 	});
 
-	it("defaults the catalog to a vault file, which is what sync replicates", () => {
-		expect(DEFAULT_SETTINGS.catalogLocation).toBe("vault");
-		expect(normalizeSettings({}).catalogPath).toBe(DEFAULT_CATALOG_PATH);
+	it("drops the pre-1.1 catalog keys without complaint", () => {
+		const result = normalizeSettings({ catalogLocation: "vault", catalogPath: "Lib/equations.json" });
+		expect(result).toEqual(DEFAULT_SETTINGS);
+		expect("catalogPath" in result).toBe(false);
 	});
 
-	it("rejects a catalog path that is empty or escapes the vault", () => {
-		expect(normalizeSettings({ catalogPath: "   " }).catalogPath).toBe(DEFAULT_CATALOG_PATH);
-		expect(normalizeSettings({ catalogPath: "../outside.json" }).catalogPath).toBe(DEFAULT_CATALOG_PATH);
-		expect(normalizeSettings({ catalogPath: "/Math/eq.json" }).catalogPath).toBe("Math/eq.json");
+	it("defaults the library folder and rejects one that escapes the vault", () => {
+		expect(normalizeSettings({}).libraryFolder).toBe(DEFAULT_LIBRARY_FOLDER);
+		expect(normalizeSettings({ libraryFolder: "   " }).libraryFolder).toBe(DEFAULT_LIBRARY_FOLDER);
+		expect(normalizeSettings({ libraryFolder: "../outside" }).libraryFolder).toBe(DEFAULT_LIBRARY_FOLDER);
+		expect(normalizeSettings({ libraryFolder: "/Math/Eq/" }).libraryFolder).toBe("Math/Eq");
+	});
+
+	it("allows an empty template path and an empty file prefix", () => {
+		expect(normalizeSettings({ templatePath: "" }).templatePath).toBe("");
+		expect(normalizeSettings({ templatePath: "../x.md" }).templatePath).toBe("");
+		expect(normalizeSettings({ filePrefix: "" }).filePrefix).toBe("");
+		expect(normalizeSettings({ filePrefix: "a/b" }).filePrefix).toBe(DEFAULT_FILE_PREFIX);
 	});
 
 	it("discards values of the wrong type or outside the allowed set", () => {
@@ -43,6 +64,9 @@ describe("normalizeSettings", () => {
 			logCap: 42,
 			sortOrder: "colour",
 			lastCategory: 7,
+			libraryFolder: 3,
+			keys: "Name",
+			categories: "Econ",
 		});
 		expect(result).toEqual(DEFAULT_SETTINGS);
 	});
@@ -57,5 +81,29 @@ describe("normalizeSettings", () => {
 
 	it("trims a stored trigger", () => {
 		expect(normalizeSettings({ suggestTrigger: " $/ " }).suggestTrigger).toBe("$/");
+	});
+});
+
+describe("normalizeKeys", () => {
+	it("fills missing or invalid keys from the defaults, one at a time", () => {
+		expect(normalizeKeys(undefined)).toEqual(DEFAULT_KEYS);
+		expect(normalizeKeys({ latex: "LaTeX", note: "" })).toEqual({ ...DEFAULT_KEYS, latex: "LaTeX" });
+		expect(normalizeKeys({ name: "Na:me" }).name).toBe(DEFAULT_KEYS.name);
+		expect(normalizeKeys({ symbol: "  Sym  " }).symbol).toBe("Sym");
+	});
+});
+
+describe("normalizeCategories", () => {
+	it("keeps trimmed unique strings and never the reserved category", () => {
+		expect(normalizeCategories([" Econ ", "Econ", "Uncategorized", 4, ""])).toEqual(["Econ"]);
+		expect(normalizeCategories("Econ")).toEqual([]);
+	});
+});
+
+describe("normalizeVaultPath", () => {
+	it("strips leading and trailing slashes", () => {
+		expect(normalizeVaultPath("/a/b/", "x")).toBe("a/b");
+		expect(normalizeVaultPath("a/../b", "x")).toBe("x");
+		expect(normalizeVaultPath(undefined, "x")).toBe("x");
 	});
 });

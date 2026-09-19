@@ -95,7 +95,46 @@ export function mergeCatalog(
 	};
 }
 
-/** Pretty-printed catalog JSON, which is what both save and export write. */
+export interface ImportPlan {
+	/** Incoming equations with no LaTeX match in the library, ready to become notes. */
+	readonly toCreate: readonly Equation[];
+	/** Incoming equations whose LaTeX is already in the library, by name. */
+	readonly skipped: readonly string[];
+}
+
+/**
+ * Decides which imported equations become new notes. Identity across systems
+ * is the LaTeX itself: an incoming equation whose bare LaTeX already exists in
+ * the library is skipped, whatever its name or id, so importing the same file
+ * twice creates nothing. Names are disambiguated against the library.
+ */
+export function planImport(existing: Catalog, incoming: Catalog): ImportPlan {
+	const known = new Set(existing.equations.map((e) => e.latex));
+	const names = existing.equations.map((e) => e.name);
+	const toCreate: Equation[] = [];
+	const skipped: string[] = [];
+	for (const candidate of incoming.equations) {
+		if (known.has(candidate.latex)) {
+			skipped.push(candidate.name);
+			continue;
+		}
+		known.add(candidate.latex);
+		const name = uniqueName(names, candidate.name);
+		names.push(name);
+		toCreate.push({ ...candidate, name });
+	}
+	return { toCreate, skipped };
+}
+
+/**
+ * Pretty-printed catalog JSON for export. The search-only `text` field is
+ * dropped: it is derived from the notes and can be large.
+ */
 export function serializeCatalog(catalog: Catalog): string {
-	return JSON.stringify(catalog, null, 2) + "\n";
+	const equations = catalog.equations.map((equation) => {
+		const copy: Record<string, unknown> = { ...equation };
+		delete copy.text;
+		return copy;
+	});
+	return JSON.stringify({ ...catalog, equations }, null, 2) + "\n";
 }

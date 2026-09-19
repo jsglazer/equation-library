@@ -10,12 +10,13 @@ import { App, ButtonComponent, Editor, EditorPosition, Menu, Modal, Notice, Plat
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
 import { InsertMode, isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
-import { SortOrder, searchEquations } from "../core/search";
+import { SortOrder, allUsages, searchEquations } from "../core/search";
 import {
 	addCategory,
 	addEquation,
 	deleteCategory,
 	deleteEquation,
+	findByLatex,
 	orderedCategories,
 	renameCategory,
 	updateEquation,
@@ -54,8 +55,17 @@ export interface LibraryModalDeps {
 	readonly getSettings: () => EquationLibrarySettings;
 	readonly saveSettings: (patch: Partial<EquationLibrarySettings>) => Promise<void>;
 	readonly loadCatalog: () => Promise<Catalog>;
-	readonly saveCatalog: (catalog: Catalog) => Promise<void>;
+	/**
+	 * Persists the difference between the catalog as loaded and as edited, and
+	 * returns the catalog re-read from storage (new equations get their real ids).
+	 */
+	readonly saveCatalog: (previous: Catalog, next: Catalog) => Promise<Catalog>;
+	/** Opens the note behind an equation; false when it no longer exists. */
+	readonly openNote: (id: string) => Promise<boolean>;
+	/** The `[[link]]` text that points at an equation's note from the active note. */
+	readonly linkFor: (id: string) => string;
 	readonly log: (request: LogRequest) => void;
+	/** A placeholder id for an equation not yet saved; storage assigns the real one. */
 	readonly mintId: () => string;
 	readonly now: () => string;
 	readonly isMobile: boolean;
@@ -64,12 +74,26 @@ export interface LibraryModalDeps {
 }
 
 const ALL_CATEGORIES = "__all__";
+const ALL_USAGES = "__all__";
+
+/** `symbol = latex` when the equation has a symbol, otherwise just the LaTeX. */
+function withSymbol(equation: Equation): string {
+	return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
+}
 
 export class LibraryModal extends Modal {
 	private catalog: Catalog = { schemaVersion: 1, categories: [UNCATEGORIZED], equations: [] };
 	private searchText = "";
 	private category: string | null;
+	/** The Usage tag filter; null is "any". Not remembered between sessions. */
+	private usage: string | null = null;
 	private sort: SortOrder;
+	/**
+	 * True while a save is being written. Saving creates or edits notes, which
+	 * takes long enough for a second click to land, so every action that writes
+	 * checks this first — a double-click on Add to Library saves once.
+	 */
+	private busy = false;
 
 	/**
 	 * The editor is resolved once, here, and held for the modal's lifetime: an
@@ -88,7 +112,9 @@ export class LibraryModal extends Modal {
 	private mathField: MathFieldHandle | null = null;
 	private latexInput!: HTMLTextAreaElement;
 	private nameInput!: HTMLInputElement;
+	private symbolInput!: HTMLInputElement;
 	private noteInput!: HTMLTextAreaElement;
+	private usageFilterEl!: HTMLSelectElement;
 	private generatorCategoryEl!: HTMLSelectElement;
 	private generatorCategory = UNCATEGORIZED;
 	private latex = "";
@@ -216,6 +242,13 @@ export class LibraryModal extends Modal {
 			this.renderGrid();
 		});
 
+		this.usageFilterEl = bar.createEl("select", { cls: "dropdown eqlib-usage-filter" });
+		this.fillUsageFilter();
+		this.usageFilterEl.addEventListener("change", () => {
+			this.usage = this.usageFilterEl.value === ALL_USAGES ? null : this.usageFilterEl.value;
+			this.renderGrid();
+		});
+
 		const sortSelect = bar.createEl("select", { cls: "dropdown eqlib-sort" });
 		for (const [value, label] of [
 			["name", "Name"],
@@ -263,6 +296,30 @@ export class LibraryModal extends Modal {
 		}
 	}
 
+	/**
+	 * The Usage filter lists every tag found in the library. Tags are read from
+	 * the notes and never edited here, so the list is whatever the notes say.
+	 * It is hidden when no note carries a tag, keeping the toolbar unchanged
+	 * for a library that does not use them.
+	 */
+	private fillUsageFilter(): void {
+		const select = this.usageFilterEl;
+		select.empty();
+		const usages = allUsages(this.catalog.equations);
+		const all = select.createEl("option", { text: "All usages" });
+		all.value = ALL_USAGES;
+		for (const usage of usages) {
+			const option = select.createEl("option", { text: usage });
+			option.value = usage;
+		}
+		select.value = this.usage ?? ALL_USAGES;
+		if (select.value !== (this.usage ?? ALL_USAGES)) {
+			this.usage = null;
+			select.value = ALL_USAGES;
+		}
+		select.toggle(usages.length > 0);
+	}
+
 	private buildGenerator(parent: HTMLElement): void {
 		const panel = parent.createDiv({ cls: "eqlib-generator" });
 		panel.createEl("h4", { text: "Generator", cls: "eqlib-panel-title" });
@@ -270,6 +327,10 @@ export class LibraryModal extends Modal {
 		const meta = panel.createDiv({ cls: "eqlib-generator-meta" });
 		this.nameInput = meta.createEl("input", { cls: "eqlib-name", type: "text" });
 		this.nameInput.placeholder = "Equation name";
+
+		this.symbolInput = meta.createEl("input", { cls: "eqlib-symbol", type: "text" });
+		this.symbolInput.placeholder = "Symbol (LaTeX, optional)";
+		this.symbolInput.spellcheck = false;
 
 		const categorySelect = meta.createEl("select", { cls: "dropdown eqlib-generator-category" });
 		categorySelect.addEventListener("change", () => {
@@ -389,6 +450,7 @@ export class LibraryModal extends Modal {
 	private async refreshCatalog(): Promise<void> {
 		this.catalog = await this.deps.loadCatalog();
 		this.syncCategorySelectors();
+		this.fillUsageFilter();
 		this.adoptPrefilledEquation();
 		this.renderGrid();
 	}
@@ -402,11 +464,17 @@ export class LibraryModal extends Modal {
 		if (this.deps.prefill === undefined) return;
 		const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
 		if (!match) return;
-		this.nameInput.value = match.name;
-		this.noteInput.value = match.note ?? "";
-		this.generatorCategory = match.category;
-		this.generatorCategoryEl.value = match.category;
-		this.editingEquationId = match.id;
+		this.adoptEquation(match);
+	}
+
+	/** Makes the generator edit `equation` in place: fields filled, Update shown. */
+	private adoptEquation(equation: Equation): void {
+		this.nameInput.value = equation.name;
+		this.symbolInput.value = equation.symbol ?? "";
+		this.noteInput.value = equation.note ?? "";
+		this.generatorCategory = equation.category;
+		this.generatorCategoryEl.value = equation.category;
+		this.editingEquationId = equation.id;
 		this.updateButton?.buttonEl.show();
 	}
 
@@ -424,11 +492,32 @@ export class LibraryModal extends Modal {
 		select.value = this.generatorCategory;
 	}
 
-	private async commit(catalog: Catalog): Promise<void> {
-		this.catalog = catalog;
-		await this.deps.saveCatalog(catalog);
+	/**
+	 * Writes an edited catalog to storage and adopts what storage read back.
+	 *
+	 * The re-read matters: a new equation's placeholder id becomes its note
+	 * path, so a following Update or Delete addresses the right note. Returns
+	 * the saved catalog, or null when the write failed (the notice is shown
+	 * here, the in-memory catalog is left as it was).
+	 */
+	private async commit(catalog: Catalog): Promise<Catalog | null> {
+		if (this.busy) {
+			new Notice("Still saving the last change.");
+			return null;
+		}
+		this.busy = true;
+		try {
+			this.catalog = await this.deps.saveCatalog(this.catalog, catalog);
+		} catch (error) {
+			new Notice(`Equation Library: could not save (${String(error)}).`);
+			return null;
+		} finally {
+			this.busy = false;
+		}
 		this.syncCategorySelectors();
+		this.fillUsageFilter();
 		this.renderGrid();
+		return this.catalog;
 	}
 
 	// ----------------------------------------------------------------- grid
@@ -441,6 +530,7 @@ export class LibraryModal extends Modal {
 		const results = searchEquations(this.catalog.equations, {
 			text: this.searchText,
 			category: this.category,
+			usage: this.usage,
 			sort: this.sort,
 		});
 
@@ -491,13 +581,14 @@ export class LibraryModal extends Modal {
 		const body = tile.querySelector<HTMLElement>(".eqlib-tile-body");
 		if (!body) return;
 		body.empty();
-		const key = `${equation.id}:${equation.latex}`;
+		const shown = withSymbol(equation);
+		const key = `${equation.id}:${shown}`;
 		const cached = this.markupCache.get(key);
 		if (cached !== undefined) {
 			body.innerHTML = cached;
 			return;
 		}
-		renderLatexInto(body, equation.latex, "inline");
+		renderLatexInto(body, shown, "inline");
 		this.markupCache.set(key, body.innerHTML);
 	}
 
@@ -507,12 +598,7 @@ export class LibraryModal extends Modal {
 		this.latex = equation.latex;
 		this.latexInput.value = equation.latex;
 		this.mathField?.setLatex(equation.latex);
-		this.nameInput.value = equation.name;
-		this.noteInput.value = equation.note ?? "";
-		this.generatorCategory = equation.category;
-		this.generatorCategoryEl.value = equation.category;
-		this.editingEquationId = equation.id;
-		this.updateButton?.buttonEl.show();
+		this.adoptEquation(equation);
 	}
 
 	private currentLatex(): string {
@@ -565,8 +651,29 @@ export class LibraryModal extends Modal {
 		this.finishInsert();
 	}
 
-	private onTileInsert(equation: Equation, event: MouseEvent): void {
-		if (!this.insertIntoEditor(equation.latex, event)) return;
+	/**
+	 * Double-click inserts the equation; shift makes it a block; alt (option)
+	 * prefixes the symbol, `E_p = …`, when the equation has one.
+	 */
+	private onTileInsert(equation: Equation, event: MouseEvent, symbol = event.altKey): void {
+		const latex = symbol ? withSymbol(equation) : equation.latex;
+		if (!this.insertIntoEditor(latex, event)) return;
+		this.deps.log({
+			action: "insert-at-cursor",
+			latex,
+			name: equation.name,
+			category: equation.category,
+		});
+		this.finishInsert();
+	}
+
+	/** Inserts a wikilink to the equation's note at the cursor. */
+	private onTileInsertLink(equation: Equation): void {
+		if (!this.editor) {
+			new Notice("Open a markdown note first — there is nowhere to insert.");
+			return;
+		}
+		this.editor.replaceSelection(this.deps.linkFor(equation.id));
 		this.deps.log({
 			action: "insert-at-cursor",
 			latex: equation.latex,
@@ -602,21 +709,39 @@ export class LibraryModal extends Modal {
 			this.nameInput.focus();
 			return null;
 		}
+		if (this.busy) {
+			new Notice("Still saving the last change.");
+			return null;
+		}
+		// A second click on Add to Library, or re-adding an equation that is
+		// already saved, must not make a copy: the existing one is loaded for
+		// editing instead, and the caller may still insert it.
+		const existing = findByLatex(this.catalog, latex);
+		if (existing) {
+			this.adoptEquation(existing);
+			new Notice(`Already in the library as "${existing.name}".`);
+			return existing;
+		}
 		const result = addEquation(this.catalog, {
 			id: this.deps.mintId(),
 			name,
 			latex,
 			category: this.generatorCategory,
 			note: this.noteInput.value,
+			symbol: this.symbolInput.value,
 			now: this.deps.now(),
 		});
 		if (!result.ok) {
 			new Notice(result.error);
 			return null;
 		}
-		const added = result.value.equations[result.value.equations.length - 1];
-		await this.commit(result.value);
+		const pending = result.value.equations[result.value.equations.length - 1];
+		const saved = await this.commit(result.value);
+		if (saved === null) return null;
+		// Storage assigned the real id; find the saved equation by its LaTeX.
+		const added = findByLatex(saved, pending.latex) ?? pending;
 		if (added.name !== name) new Notice(`Saved as "${added.name}" — that name was taken.`);
+		this.adoptEquation(added);
 		return added;
 	}
 
@@ -661,14 +786,14 @@ export class LibraryModal extends Modal {
 		const result = updateEquation(
 			this.catalog,
 			id,
-			{ name, latex, category: this.generatorCategory, note: this.noteInput.value },
+			{ name, latex, category: this.generatorCategory, note: this.noteInput.value, symbol: this.symbolInput.value },
 			this.deps.now(),
 		);
 		if (!result.ok) {
 			new Notice(result.error);
 			return;
 		}
-		await this.commit(result.value);
+		if ((await this.commit(result.value)) === null) return;
 		new Notice(`Updated "${name}".`);
 		this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
 		this.editingEquationId = null;
@@ -680,6 +805,32 @@ export class LibraryModal extends Modal {
 	private showTileMenu(equation: Equation, event: MouseEvent): void {
 		event.preventDefault();
 		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("Open note")
+				.setIcon("file-text")
+				.onClick(() => {
+					void this.deps.openNote(equation.id).then((opened) => {
+						if (!opened) new Notice("That note no longer exists.");
+						else this.close();
+					});
+				}),
+		);
+		if (this.editor) {
+			menu.addItem((item) =>
+				item
+					.setTitle(equation.symbol ? "Insert with symbol" : "Insert")
+					.setIcon("sigma")
+					.onClick((evt) => this.onTileInsert(equation, evt as MouseEvent, true)),
+			);
+			menu.addItem((item) =>
+				item
+					.setTitle("Insert as link")
+					.setIcon("link")
+					.onClick(() => this.onTileInsertLink(equation)),
+			);
+		}
+		menu.addSeparator();
 		menu.addItem((item) =>
 			item
 				.setTitle("Rename")
@@ -722,6 +873,7 @@ export class LibraryModal extends Modal {
 			latex: equation.latex,
 			category: equation.category,
 			note: equation.note,
+			symbol: equation.symbol,
 			now: this.deps.now(),
 		});
 		if (!result.ok) {
@@ -729,7 +881,7 @@ export class LibraryModal extends Modal {
 			return;
 		}
 		const added = result.value.equations[result.value.equations.length - 1];
-		await this.commit(result.value);
+		if ((await this.commit(result.value)) === null) return;
 		new Notice(`Duplicated as "${added.name}".`);
 		this.deps.log({
 			action: "duplicate-equation",
