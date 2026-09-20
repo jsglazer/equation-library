@@ -46,8 +46,6 @@ export const DEFAULT_KEYS: FrontmatterKeys = {
 };
 
 export interface EquationLibrarySettings {
-	/** Close the library popup after an insert. */
-	readonly closeOnInsert: boolean;
 	/** Delimiters used by an unmodified insert. */
 	readonly insertFormat: InsertFormat;
 	/** Master enable/disable toggle for the editor autocomplete. */
@@ -84,7 +82,6 @@ export const DEFAULT_LIBRARY_FOLDER = "Equation Library";
 export const DEFAULT_FILE_PREFIX = "eq-";
 
 export const DEFAULT_SETTINGS: EquationLibrarySettings = {
-	closeOnInsert: true,
 	insertFormat: "inline",
 	suggestEnabled: true,
 	suggestTrigger: DEFAULT_TRIGGER,
@@ -157,6 +154,11 @@ function pickFrom<T extends string | number>(value: unknown, allowed: readonly T
 /**
  * Folds a raw `data.json` payload onto the defaults, discarding anything of
  * the wrong type. An empty or unreadable payload yields the defaults.
+ *
+ * Only the keys named below survive, which is also how a retired setting
+ * leaves: `closeOnInsert` was dropped when the library became a panel that is
+ * meant to stay open, and an install that still has it in `data.json` is
+ * rewritten without it on the next save, silently.
  */
 export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 	if (typeof raw !== "object" || raw === null) return DEFAULT_SETTINGS;
@@ -165,7 +167,6 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 	const trigger = typeof record.suggestTrigger === "string" ? record.suggestTrigger.trim() : "";
 	const prefix = typeof record.filePrefix === "string" ? record.filePrefix.trim() : DEFAULT_FILE_PREFIX;
 	return {
-		closeOnInsert: pickBoolean(record.closeOnInsert, DEFAULT_SETTINGS.closeOnInsert),
 		insertFormat: pickFrom(record.insertFormat, INSERT_FORMATS, DEFAULT_SETTINGS.insertFormat),
 		suggestEnabled: pickBoolean(record.suggestEnabled, DEFAULT_SETTINGS.suggestEnabled),
 		// An empty trigger would make every keystroke a trigger, so it falls back.

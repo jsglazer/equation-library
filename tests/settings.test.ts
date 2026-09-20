@@ -20,7 +20,6 @@ describe("normalizeSettings", () => {
 
 	it("keeps valid values", () => {
 		const stored = {
-			closeOnInsert: false,
 			insertFormat: "always-block",
 			suggestEnabled: false,
 			suggestTrigger: ";;",
@@ -58,7 +57,6 @@ describe("normalizeSettings", () => {
 
 	it("discards values of the wrong type or outside the allowed set", () => {
 		const result = normalizeSettings({
-			closeOnInsert: "yes",
 			insertFormat: "sideways",
 			suggestEnabled: 1,
 			logCap: 42,
@@ -69,6 +67,14 @@ describe("normalizeSettings", () => {
 			categories: "Econ",
 		});
 		expect(result).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("drops a setting that no longer exists, so an old data.json never warns", () => {
+		// `closeOnInsert` went away when the library became a panel meant to stay
+		// open; an install that predates that still has it in data.json.
+		const result = normalizeSettings({ closeOnInsert: true, sortOrder: "created" });
+		expect(result).not.toHaveProperty("closeOnInsert");
+		expect(result.sortOrder).toBe("created");
 	});
 
 	it("accepts 'off' as a log cap", () => {

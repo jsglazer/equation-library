@@ -6,7 +6,17 @@
  * the settings tab and the editor suggester. All decision logic lives under
  * `src/core/`; nothing here reads Node's `fs` or `path`.
  */
-import { Editor, MarkdownFileInfo, MarkdownView, Menu, Notice, Plugin, Platform, TAbstractFile } from "obsidian";
+import {
+	Editor,
+	MarkdownFileInfo,
+	MarkdownView,
+	Menu,
+	Notice,
+	Plugin,
+	Platform,
+	TAbstractFile,
+	WorkspaceLeaf,
+} from "obsidian";
 import { Catalog, LogAction } from "./core/types";
 import { DEFAULT_SETTINGS, EquationLibrarySettings, normalizeSettings } from "./core/settings";
 import { findMathSpanAt } from "./core/latex";
@@ -15,7 +25,14 @@ import { planImport, serializeCatalog } from "./core/import-export";
 import { LogStore } from "./storage/log-store";
 import { NoteStore } from "./storage/note-store";
 import { EquationSuggest } from "./editor/equation-suggest";
-import { GeneratorPrefill, LibraryModal, LogRequest } from "./ui/library-modal";
+import {
+	EquationLibraryView,
+	GeneratorPrefill,
+	LIBRARY_VIEW_TYPE,
+	LibraryViewDeps,
+	LogRequest,
+} from "./ui/library-view";
+import { EditorTracker } from "./ui/editor-tracker";
 import { ViewFileModal } from "./ui/view-file-modal";
 import { PromptModal } from "./ui/prompt-modal";
 import { ImportModal } from "./ui/import-modal";
@@ -38,6 +55,9 @@ export default class EquationLibraryPlugin extends Plugin {
 	 */
 	private lastContextMenu: MouseEvent | null = null;
 
+	/** The note the panel inserts into, resolved fresh on every insert. */
+	private editors!: EditorTracker;
+
 	async onload(): Promise<void> {
 		const raw: unknown = await this.loadData();
 		this.settings = normalizeSettings(raw);
@@ -50,15 +70,32 @@ export default class EquationLibraryPlugin extends Plugin {
 
 		configureMathLive({ virtualKeyboard: Platform.isMobile });
 
+		// The panel is not modal, so focus genuinely moves between it and the
+		// note; a leaf showing the library must never be mistaken for the note to
+		// insert into.
+		this.editors = new EditorTracker(this.app, (leaf) => leaf.view instanceof EquationLibraryView);
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => this.editors.handleActiveLeafChange(leaf)),
+		);
+		this.registerEvent(this.app.workspace.on("file-open", (file) => this.editors.handleFileOpen(file)));
+
+		this.registerView(LIBRARY_VIEW_TYPE, (leaf) => new EquationLibraryView(leaf, this.viewDeps()));
+
 		this.addCommand({
 			id: "show-equation-library",
 			name: "Show Equation Library",
 			// Opening from inside an equation loads that equation, so the command
 			// doubles as "edit this equation".
-			callback: () => this.openLibrary(this.prefillFromEditor(this.app.workspace.activeEditor?.editor ?? null)),
+			callback: () => void this.openLibrary(this.prefillFromActiveEditor()),
 		});
 
-		this.addRibbonIcon("sigma", "Show Equation Library", () => this.openLibrary());
+		this.addCommand({
+			id: "show-equation-library-window",
+			name: "Show Equation Library in a new window",
+			callback: () => void this.openLibrary(this.prefillFromActiveEditor(), true),
+		});
+
+		this.addRibbonIcon("sigma", "Show Equation Library", () => void this.openLibrary());
 
 		this.registerDomEvent(document, "contextmenu", (event) => {
 			this.lastContextMenu = event;
@@ -66,14 +103,13 @@ export default class EquationLibraryPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, info: MarkdownView | MarkdownFileInfo) => {
-				void info;
-				const prefill = this.prefillFromEditor(editor, this.lastContextMenu);
+				const prefill = this.prefillFromEditor(editor, info.file?.path ?? null, this.lastContextMenu);
 				if (prefill === undefined) return;
 				menu.addItem((item) =>
 					item
 						.setTitle("Edit equation in Equation Library")
 						.setIcon("sigma")
-						.onClick(() => this.openLibrary(prefill)),
+						.onClick(() => void this.openLibrary(prefill)),
 				);
 			}),
 		);
@@ -107,13 +143,20 @@ export default class EquationLibraryPlugin extends Plugin {
 		);
 
 		this.addSettingTab(new EquationLibrarySettingTab(this.app, this));
+
+		// The tracker needs the note that is already open at startup; it does not
+		// wait for the first leaf change.
+		this.app.workspace.onLayoutReady(() => this.editors.syncFromWorkspace());
 	}
 
 	onunload(): void {
 		// Commands, the ribbon icon, the settings tab and the editor suggest are
 		// all removed by Obsidian because they were registered through the Plugin
-		// API. The one thing it does not know about is the MathLive stylesheet
-		// this plugin injected into each open window.
+		// API. Two things it does not know about: the MathLive stylesheet this
+		// plugin injected into each open window, and the panels still on screen,
+		// whose view type is about to stop existing.
+		this.editors.dispose();
+		for (const leaf of this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)) leaf.detach();
 		removeMathLiveStyles();
 	}
 
@@ -152,7 +195,11 @@ export default class EquationLibraryPlugin extends Plugin {
 	 * `$$…$$` block spans lines and a fenced code block above the cursor changes
 	 * what counts as math below it.
 	 */
-	private prefillFromEditor(editor: Editor | null, event: MouseEvent | null = null): GeneratorPrefill | undefined {
+	private prefillFromEditor(
+		editor: Editor | null,
+		filePath: string | null,
+		event: MouseEvent | null = null,
+	): GeneratorPrefill | undefined {
 		if (!editor) return undefined;
 		const span = findMathSpanAt(editor.getValue(), this.offsetAt(editor, event));
 		if (span === null) return undefined;
@@ -160,7 +207,16 @@ export default class EquationLibraryPlugin extends Plugin {
 			latex: span.latex,
 			mode: span.mode,
 			range: { from: editor.offsetToPos(span.start), to: editor.offsetToPos(span.end) },
+			// The panel stays open across note switches, so an edit-in-place has to
+			// remember which note its coordinates belong to.
+			filePath: filePath ?? undefined,
 		};
+	}
+
+	/** The equation under the caret in the note that has focus right now. */
+	private prefillFromActiveEditor(): GeneratorPrefill | undefined {
+		const active = this.app.workspace.activeEditor;
+		return this.prefillFromEditor(active?.editor ?? null, active?.file?.path ?? null);
 	}
 
 	/** The document offset a click landed on, falling back to the caret. */
@@ -175,10 +231,8 @@ export default class EquationLibraryPlugin extends Plugin {
 		return editor.posToOffset(editor.getCursor());
 	}
 
-	private openLibrary(prefill?: GeneratorPrefill): void {
-		const fromPath = this.app.workspace.getActiveFile()?.path ?? "";
-		new LibraryModal(this.app, {
-			prefill,
+	private viewDeps(): LibraryViewDeps {
+		return {
 			version: this.manifest.version,
 			getSettings: () => this.settings,
 			saveSettings: (patch) => this.updateSettings(patch),
@@ -187,12 +241,44 @@ export default class EquationLibraryPlugin extends Plugin {
 			loadCatalog: () => this.noteStore.loadCatalog(),
 			saveCatalog: (previous, next) => this.noteStore.applyCatalog(previous, next),
 			openNote: (id) => this.noteStore.openNote(id, false),
-			linkFor: (id) => this.noteStore.linkFor(id, fromPath),
+			// Resolved per link, not per open: a link is relative to the note it is
+			// being written into, and with a panel that note changes underneath.
+			linkFor: (id) => this.noteStore.linkFor(id, this.editors.resolve()?.filePath ?? ""),
 			log: (request) => this.log(request),
 			mintId: () => `new:${crypto.randomUUID()}`,
 			now: () => new Date().toISOString(),
 			isMobile: Platform.isMobile,
-		}).open();
+			getEditor: () => this.editors.resolve(),
+			onEditorChange: (listener) => this.editors.subscribe(listener),
+		};
+	}
+
+	/**
+	 * Shows the library panel, reusing the one already open rather than stacking
+	 * a second copy, and loads `prefill` into it either way.
+	 *
+	 * The panel is revealed but never focused: the user asked for the library
+	 * while typing in a note, and taking the caret out of that note is exactly
+	 * what the move away from a modal was meant to stop. A popout is the one
+	 * exception — a window the user just asked for should come to the front.
+	 */
+	private async openLibrary(prefill?: GeneratorPrefill, popout = false): Promise<void> {
+		const leaf = popout ? this.app.workspace.openPopoutLeaf() : this.libraryLeaf();
+		// Re-running `setViewState` on a leaf that already holds the library would
+		// rebuild the view and throw away whatever is half-typed in the generator.
+		if (!(leaf.view instanceof EquationLibraryView)) {
+			await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: popout });
+		}
+		if (!popout) this.app.workspace.revealLeaf(leaf);
+		const view = leaf.view;
+		if (view instanceof EquationLibraryView) view.setPrefill(prefill);
+	}
+
+	/** The open library panel, or a fresh leaf in the right sidebar. */
+	private libraryLeaf(): WorkspaceLeaf {
+		const open = this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE);
+		if (open.length > 0) return open[0];
+		return this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
 	}
 
 	/** Queues one log entry. Fire-and-forget: a log failure never blocks an edit. */

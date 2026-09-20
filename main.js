@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => EquationLibraryPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/core/latex.ts
 function stripDelimiters(raw) {
@@ -145,6 +145,21 @@ function scanMathSpans(text) {
     offset += line.length + 1;
   }
   return spans;
+}
+function relocateMathSpan(text, latex, nearOffset) {
+  const wanted = stripDelimiters(latex);
+  if (wanted.length === 0) return null;
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const span of scanMathSpans(text)) {
+    if (span.latex !== wanted) continue;
+    const distance = Math.abs(span.start - nearOffset);
+    if (distance < bestDistance) {
+      best = span;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 function findMathSpanAt(text, offset) {
   for (const span of scanMathSpans(text)) {
@@ -285,7 +300,6 @@ var DEFAULT_KEYS = {
 var DEFAULT_LIBRARY_FOLDER = "Equation Library";
 var DEFAULT_FILE_PREFIX = "eq-";
 var DEFAULT_SETTINGS = {
-  closeOnInsert: true,
   insertFormat: "inline",
   suggestEnabled: true,
   suggestTrigger: DEFAULT_TRIGGER,
@@ -347,7 +361,6 @@ function normalizeSettings(raw) {
   const trigger = typeof record.suggestTrigger === "string" ? record.suggestTrigger.trim() : "";
   const prefix = typeof record.filePrefix === "string" ? record.filePrefix.trim() : DEFAULT_FILE_PREFIX;
   return {
-    closeOnInsert: pickBoolean(record.closeOnInsert, DEFAULT_SETTINGS.closeOnInsert),
     insertFormat: pickFrom(record.insertFormat, INSERT_FORMATS, DEFAULT_SETTINGS.insertFormat),
     suggestEnabled: pickBoolean(record.suggestEnabled, DEFAULT_SETTINGS.suggestEnabled),
     // An empty trigger would make every keystroke a trigger, so it falls back.
@@ -17315,7 +17328,7 @@ var EquationSuggest = class extends import_obsidian3.EditorSuggest {
   }
 };
 
-// src/ui/library-modal.ts
+// src/ui/library-view.ts
 var import_obsidian5 = require("obsidian");
 
 // src/ui/prompt-modal.ts
@@ -17369,16 +17382,16 @@ var PromptModal = class extends import_obsidian4.Modal {
   }
 };
 
-// src/ui/library-modal.ts
+// src/ui/library-view.ts
+var LIBRARY_VIEW_TYPE = "equation-library";
 var ALL_CATEGORIES = "__all__";
 var ALL_USAGES = "__all__";
 function withSymbol(equation) {
   return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
 }
-var LibraryModal = class extends import_obsidian5.Modal {
+var LibraryRenderer = class {
   constructor(app, deps) {
-    var _a2, _b2;
-    super(app);
+    this.app = app;
     this.deps = deps;
     this.catalog = { schemaVersion: 1, categories: [UNCATEGORIZED], equations: [] };
     this.searchText = "";
@@ -17391,8 +17404,9 @@ var LibraryModal = class extends import_obsidian5.Modal {
      */
     this.busy = false;
     this.observer = null;
+    this.unsubscribeEditor = null;
     this.pending = /* @__PURE__ */ new Map();
-    /** Rendered markup, cached for the modal's lifetime and keyed by content. */
+    /** Rendered markup, cached for the panel's lifetime and keyed by content. */
     this.markupCache = /* @__PURE__ */ new Map();
     this.mathField = null;
     this.generatorCategory = UNCATEGORIZED;
@@ -17402,69 +17416,55 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.openNoteButton = null;
     /** The equation the generator is editing, or null when building a fresh one. */
     this.editingEquationId = null;
-    /**
-     * The document span an insert should overwrite, taken from the prefill.
-     *
-     * Cleared after the first insert: the positions describe the document as it
-     * was when the modal opened, and rewriting the span invalidates them.
-     */
-    this.replaceRange = null;
-    this.replaceMode = "inline";
+    /** The pending edit-in-place, or null when an insert goes at the cursor. */
+    this.replace = null;
     const settings = deps.getSettings();
     this.category = settings.lastCategory;
     this.sort = settings.sortOrder;
-    this.editor = (_b2 = (_a2 = app.workspace.activeEditor) == null ? void 0 : _a2.editor) != null ? _b2 : null;
   }
-  onOpen() {
-    const { contentEl, modalEl } = this;
-    modalEl.addClass("eqlib-modal");
-    contentEl.empty();
-    contentEl.addClass("eqlib-content");
-    this.buildToolbar(contentEl);
-    this.scrollEl = contentEl.createDiv({ cls: "eqlib-grid-scroll" });
+  /**
+   * Draws the panel into `parent`.
+   *
+   * Nothing here takes focus. The modal fought Obsidian for the caret on open
+   * — the Search Equations field won it, which was right when the workspace
+   * was frozen behind the modal. In a docked panel the same code would yank
+   * the cursor out of the note being typed in, so the panel now takes focus
+   * only when it is clicked. The search field is still the first tabbable
+   * element, so one Tab reaches it.
+   */
+  mount(parent) {
+    this.rootEl = parent;
+    parent.empty();
+    parent.addClass("eqlib-content", "eqlib-panel");
+    this.buildToolbar(parent);
+    this.scrollEl = parent.createDiv({ cls: "eqlib-grid-scroll" });
     this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
-    this.buildGenerator(contentEl);
-    this.buildFooter(contentEl);
-    this.registerShortcuts(contentEl);
-    this.focusSearchInput();
-    const win = contentEl.win;
+    this.buildGenerator(parent);
+    this.buildFooter(parent);
+    this.registerShortcuts(parent);
+    const win = parent.win;
     this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
       root: this.scrollEl,
       rootMargin: "200px"
     });
+    this.unsubscribeEditor = this.deps.onEditorChange(() => this.refreshEditorState());
+    this.refreshEditorState();
     void this.refreshCatalog();
   }
   /**
-   * Puts the caret in the Search Equations field, so typing filters the grid.
-   *
-   * Obsidian moves focus after `onOpen` returns, so focusing once here can be
-   * undone a moment later. The deferred calls run after that, and re-check the
-   * field is still on screen in case the modal was closed in between.
-   */
-  focusSearchInput() {
-    const focus = () => {
-      if (!this.searchInput.isConnected) return;
-      this.searchInput.focus();
-    };
-    focus();
-    const win = this.contentEl.win;
-    win.setTimeout(focus, 0);
-    win.requestAnimationFrame(focus);
-  }
-  /**
    * Cmd/Ctrl+Return runs the primary action — Insert at cursor, or Replace in
-   * note when the modal was opened on an equation in the document — and
-   * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the modal
-   * content rather than per field so they fire from the LaTeX box, the name,
-   * the note or a focused button alike.
+   * note when the panel was opened on an equation in the document — and
+   * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the panel body
+   * rather than per field so they fire from the LaTeX box, the name, the note
+   * or a focused button alike.
    *
-   * Neither fires without an editor to insert into, which is the same
-   * condition that disables the two buttons.
+   * Neither fires without a note to insert into, which is the same condition
+   * that disables the two buttons — and it is tested now, not at open.
    */
-  registerShortcuts(contentEl) {
-    contentEl.addEventListener("keydown", (event) => {
+  registerShortcuts(parent) {
+    parent.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
-      if (this.editor === null) {
+      if (this.deps.getEditor() === null) {
         new import_obsidian5.Notice("Open a markdown note to insert an equation.");
         return;
       }
@@ -17473,24 +17473,25 @@ var LibraryModal = class extends import_obsidian5.Modal {
       else this.onInsert(void 0);
     });
   }
-  onClose() {
-    var _a2, _b2;
+  unmount() {
+    var _a2, _b2, _c2, _d2;
     (_a2 = this.observer) == null ? void 0 : _a2.disconnect();
     this.observer = null;
+    (_b2 = this.unsubscribeEditor) == null ? void 0 : _b2.call(this);
+    this.unsubscribeEditor = null;
     this.pending.clear();
-    (_b2 = this.mathField) == null ? void 0 : _b2.destroy();
+    (_c2 = this.mathField) == null ? void 0 : _c2.destroy();
     this.mathField = null;
     this.insertButtons = [];
     this.updateButton = null;
     this.openNoteButton = null;
     hideVirtualKeyboard();
-    this.contentEl.empty();
+    (_d2 = this.rootEl) == null ? void 0 : _d2.empty();
   }
   // ---------------------------------------------------------------- chrome
   buildToolbar(parent) {
     const bar = parent.createDiv({ cls: "eqlib-toolbar" });
     const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
-    this.searchInput = search;
     search.placeholder = "Search equations";
     search.addEventListener("input", () => {
       this.searchText = search.value;
@@ -17618,46 +17619,67 @@ var LibraryModal = class extends import_obsidian5.Modal {
       if (this.editingEquationId !== null) void this.openEquationNote(this.editingEquationId);
     });
     this.openNoteButton.buttonEl.hide();
-    if (this.editor === null) {
-      for (const button of this.insertButtons) {
-        button.setDisabled(true);
-        button.setTooltip("Open a markdown note to insert an equation.");
-      }
-    }
     addButton.setTooltip("Save this equation to the library.");
-    this.applyPrefill();
   }
-  /**
-   * Loads the equation the cursor was sitting in, if the caller found one.
-   *
-   * The name and category stay empty until `refreshCatalog` finds a library
-   * equation with the same LaTeX, which is what turns this into an edit of a
-   * saved equation rather than a fresh one.
-   */
   /** The modifier the platform actually uses, for tooltips. */
   modifierLabel() {
     return import_obsidian5.Platform.isMacOS ? "Cmd" : "Ctrl";
   }
-  applyPrefill() {
+  /**
+   * Enables or disables the two insert actions for the note situation right
+   * now.
+   *
+   * "Add to Library" stays available with no note open; the two insert actions
+   * cannot work without one and say so. The modal decided this once, when it
+   * opened, and was then stuck with the answer — a panel that outlives the note
+   * it was opened next to has to keep asking.
+   */
+  refreshEditorState() {
+    const hasEditor = this.deps.getEditor() !== null;
+    for (const [index, button] of this.insertButtons.entries()) {
+      button.setDisabled(!hasEditor);
+      if (!hasEditor) {
+        button.setTooltip("Open a markdown note to insert an equation.");
+      } else if (index === 0) {
+        button.setTooltip(
+          this.replace ? `Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).` : `Insert the equation into the note (${this.modifierLabel()}+Return).`
+        );
+      } else {
+        button.setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`);
+      }
+    }
+  }
+  /**
+   * Loads an equation found in the document into the generator.
+   *
+   * Called both when the panel is first opened on an equation and when it is
+   * already open and "Edit equation in Equation Library" is chosen again,
+   * which is now possible because the panel never closed.
+   */
+  loadPrefill(prefill) {
     var _a2, _b2, _c2;
-    const prefill = this.deps.prefill;
     if (!prefill || prefill.latex.length === 0) return;
     this.latex = stripDelimiters(prefill.latex);
     this.latexInput.value = this.latex;
     (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(this.latex);
-    this.replaceRange = (_b2 = prefill.range) != null ? _b2 : null;
-    this.replaceMode = prefill.mode;
-    if (this.replaceRange) {
-      (_c2 = this.insertButtons[0]) == null ? void 0 : _c2.setButtonText("Replace in note").setTooltip(`Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).`);
-    }
+    this.editingEquationId = null;
+    this.nameInput.value = "";
+    this.symbolInput.value = "";
+    this.noteInput.value = "";
+    (_b2 = this.updateButton) == null ? void 0 : _b2.buttonEl.hide();
+    (_c2 = this.openNoteButton) == null ? void 0 : _c2.buttonEl.hide();
+    this.replace = prefill.range ? { range: prefill.range, latex: this.latex, mode: prefill.mode, filePath: prefill.filePath } : null;
+    this.setPrimaryButton();
+    this.adoptPrefilledEquation();
+    this.refreshEditorState();
+  }
+  /** The primary button says what it will do: replace in place, or insert. */
+  setPrimaryButton() {
+    var _a2;
+    (_a2 = this.insertButtons[0]) == null ? void 0 : _a2.setButtonText(this.replace ? "Replace in note" : "Insert at cursor");
   }
   buildFooter(parent) {
     const footer = parent.createDiv({ cls: "eqlib-footer" });
-    new import_obsidian5.Setting(footer).setName("Close after inserting").setClass("eqlib-close-setting").addToggle(
-      (toggle) => toggle.setValue(this.deps.getSettings().closeOnInsert).onChange((value) => {
-        void this.deps.saveSettings({ closeOnInsert: value });
-      })
-    );
     footer.createDiv({ cls: "eqlib-version", text: `v${this.deps.version}` });
   }
   // ----------------------------------------------------------------- data
@@ -17669,12 +17691,11 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.renderGrid();
   }
   /**
-   * If the prefilled LaTeX is already in the library, adopt that equation's
-   * name, category and identity so Update saves back to it.
+   * If the LaTeX in the generator is already in the library, adopt that
+   * equation's name, category and identity so Update saves back to it.
    */
   adoptPrefilledEquation() {
     if (this.editingEquationId !== null || this.latex.length === 0) return;
-    if (this.deps.prefill === void 0) return;
     const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
     if (!match) return;
     this.adoptEquation(match);
@@ -17692,7 +17713,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     (_d2 = this.openNoteButton) == null ? void 0 : _d2.buttonEl.show();
   }
   syncCategorySelectors() {
-    const filter = this.contentEl.querySelector(".eqlib-category-filter");
+    const filter = this.rootEl.querySelector(".eqlib-category-filter");
     if (filter) this.fillCategoryFilter(filter);
     const select = this.generatorCategoryEl;
     select.empty();
@@ -17793,12 +17814,20 @@ var LibraryModal = class extends import_obsidian5.Modal {
     this.markupCache.set(key, body.innerHTML);
   }
   // -------------------------------------------------------------- actions
+  /**
+   * Picking an equation out of the library is a fresh insert, so it clears any
+   * pending edit-in-place: that range belongs to the equation loaded from the
+   * document, not to this one.
+   */
   loadIntoGenerator(equation) {
     var _a2;
     this.latex = equation.latex;
     this.latexInput.value = equation.latex;
     (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(equation.latex);
     this.adoptEquation(equation);
+    this.replace = null;
+    this.setPrimaryButton();
+    this.refreshEditorState();
   }
   currentLatex() {
     return stripDelimiters(this.latex.length > 0 ? this.latex : this.latexInput.value);
@@ -17807,29 +17836,52 @@ var LibraryModal = class extends import_obsidian5.Modal {
     return resolveInsertMode(this.deps.getSettings().insertFormat, (event == null ? void 0 : event.shiftKey) === true);
   }
   /**
+   * Writes the equation into the note, either over the span it came from or at
+   * the cursor.
+   *
    * Inserting inside a `$...$` or `$$...$$` span already open at the cursor
-   * drops the delimiters — adding another pair would either break the
-   * existing equation or start a nested one.
+   * drops the delimiters — adding another pair would either break the existing
+   * equation or start a nested one.
    */
   insertIntoEditor(latex, event) {
-    if (!this.editor) {
+    const target = this.deps.getEditor();
+    if (!target) {
       new import_obsidian5.Notice("Open a markdown note first \u2014 there is nowhere to insert.");
       return false;
     }
-    const range = this.replaceRange;
-    if (range) {
-      this.replaceRange = null;
-      this.editor.replaceRange(wrapDelimiters(latex, this.replaceMode), range.from, range.to);
-      this.editor.setCursor(range.from);
-      return true;
+    const pending = this.replace;
+    if (pending) {
+      this.replace = null;
+      this.setPrimaryButton();
+      const range = this.resolveReplaceRange(target, pending);
+      if (range) {
+        target.editor.replaceRange(wrapDelimiters(latex, pending.mode), range.from, range.to);
+        target.editor.setCursor(range.from);
+        return true;
+      }
+      new import_obsidian5.Notice("Could not find that equation in this note any more \u2014 inserting at the cursor instead.");
     }
-    const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
+    const textBeforeCursor = target.editor.getRange({ line: 0, ch: 0 }, target.editor.getCursor());
     const insertText = isInsideMath(textBeforeCursor) ? stripDelimiters(latex) : wrapDelimiters(latex, this.insertMode(event));
-    this.editor.replaceSelection(insertText);
+    target.editor.replaceSelection(insertText);
     return true;
   }
-  finishInsert() {
-    if (this.deps.getSettings().closeOnInsert) this.close();
+  /**
+   * Where the pending edit-in-place actually belongs in the live document.
+   *
+   * The positions captured when the panel opened describe the note as it was
+   * then; two paragraphs typed above the equation since have moved it, and
+   * replacing at the remembered range would silently delete whatever prose now
+   * sits there. So the note is rescanned and the equation found again — and if
+   * it cannot be found, or the note on screen is not the one it came from, the
+   * answer is `null` rather than a guess.
+   */
+  resolveReplaceRange(target, pending) {
+    if (pending.filePath !== void 0 && pending.filePath !== target.filePath) return null;
+    const nearOffset = target.editor.posToOffset(pending.range.from);
+    const span = relocateMathSpan(target.editor.getValue(), pending.latex, nearOffset);
+    if (span === null) return null;
+    return { from: target.editor.offsetToPos(span.start), to: target.editor.offsetToPos(span.end) };
   }
   onInsert(event) {
     const latex = this.currentLatex();
@@ -17839,7 +17891,6 @@ var LibraryModal = class extends import_obsidian5.Modal {
     }
     if (!this.insertIntoEditor(latex, event)) return;
     this.deps.log({ action: "insert-at-cursor", latex });
-    this.finishInsert();
   }
   /**
    * Double-click inserts the equation; shift makes it a block; alt (option)
@@ -17854,22 +17905,21 @@ var LibraryModal = class extends import_obsidian5.Modal {
       name: equation.name,
       category: equation.category
     });
-    this.finishInsert();
   }
   /** Inserts a wikilink to the equation's note at the cursor. */
   onTileInsertLink(equation) {
-    if (!this.editor) {
+    const target = this.deps.getEditor();
+    if (!target) {
       new import_obsidian5.Notice("Open a markdown note first \u2014 there is nowhere to insert.");
       return;
     }
-    this.editor.replaceSelection(this.deps.linkFor(equation.id));
+    target.editor.replaceSelection(this.deps.linkFor(equation.id));
     this.deps.log({
       action: "insert-at-cursor",
       latex: equation.latex,
       name: equation.name,
       category: equation.category
     });
-    this.finishInsert();
   }
   async onCopyPng() {
     const latex = this.currentLatex();
@@ -17878,7 +17928,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
       return;
     }
     try {
-      await copyLatexAsPng(this.contentEl.ownerDocument, latex, "block");
+      await copyLatexAsPng(this.rootEl.ownerDocument, latex, "block");
       new import_obsidian5.Notice("Copied the equation as a PNG.");
     } catch (error) {
       new import_obsidian5.Notice(`Could not copy the equation as a PNG: ${String(error)}`);
@@ -17948,7 +17998,6 @@ var LibraryModal = class extends import_obsidian5.Modal {
       name: added.name,
       category: added.category
     });
-    this.finishInsert();
   }
   async onUpdateEquation() {
     var _a2, _b2;
@@ -17989,7 +18038,7 @@ var LibraryModal = class extends import_obsidian5.Modal {
     menu.addItem(
       (item) => item.setTitle("Open note").setIcon("file-text").onClick(() => void this.openEquationNote(equation.id))
     );
-    if (this.editor) {
+    if (this.deps.getEditor() !== null) {
       menu.addItem(
         (item) => item.setTitle(equation.symbol ? "Insert with symbol" : "Insert").setIcon("sigma").onClick((evt) => this.onTileInsert(equation, evt, true))
       );
@@ -18020,9 +18069,12 @@ var LibraryModal = class extends import_obsidian5.Modal {
     );
     menu.showAtMouseEvent(event);
   }
+  /**
+   * The modal had to close itself to get out of the way of the note it opened;
+   * the panel simply stays where it is, beside it.
+   */
   async openEquationNote(id2) {
-    if (await this.deps.openNote(id2)) this.close();
-    else new import_obsidian5.Notice("That note no longer exists.");
+    if (!await this.deps.openNote(id2)) new import_obsidian5.Notice("That note no longer exists.");
   }
   async duplicateEquation(equation) {
     const result = addEquation(this.catalog, {
@@ -18133,10 +18185,149 @@ var LibraryModal = class extends import_obsidian5.Modal {
     );
   }
 };
+var EquationLibraryView = class extends import_obsidian5.ItemView {
+  constructor(leaf, deps) {
+    super(leaf);
+    this.deps = deps;
+    this.renderer = null;
+  }
+  getViewType() {
+    return LIBRARY_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Equation Library";
+  }
+  getIcon() {
+    return "sigma";
+  }
+  async onOpen() {
+    this.renderer = new LibraryRenderer(this.app, this.deps);
+    this.renderer.mount(this.contentEl);
+    this.renderer.loadPrefill(this.prefill);
+    this.prefill = void 0;
+  }
+  async onClose() {
+    var _a2;
+    (_a2 = this.renderer) == null ? void 0 : _a2.unmount();
+    this.renderer = null;
+  }
+  /**
+   * Loads an equation into the generator, whether or not the view has been
+   * drawn yet: a leaf restored from the last session builds its UI later, and
+   * an already-open panel is reused rather than replaced.
+   */
+  setPrefill(prefill) {
+    if (prefill === void 0) return;
+    if (this.renderer) this.renderer.loadPrefill(prefill);
+    else this.prefill = prefill;
+  }
+};
+
+// src/ui/editor-tracker.ts
+var import_obsidian6 = require("obsidian");
+var EditorTracker = class {
+  /**
+   * `isIgnored` marks leaves whose focus must not change the target — the
+   * library panel itself, above all: clicking into it would otherwise clear
+   * the very note the click is about to insert into.
+   */
+  constructor(app, isIgnored) {
+    this.app = app;
+    this.isIgnored = isIgnored;
+    this.leaf = null;
+    this.filePath = null;
+    this.listeners = /* @__PURE__ */ new Set();
+  }
+  /** Seeds the target from whatever note is open now, at load or on demand. */
+  syncFromWorkspace() {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    if (view) this.remember(view.leaf, view);
+    this.notify();
+  }
+  /** `workspace.on("active-leaf-change")`. */
+  handleActiveLeafChange(leaf) {
+    if (leaf !== null && !this.isIgnored(leaf) && leaf.view instanceof import_obsidian6.MarkdownView) {
+      this.remember(leaf, leaf.view);
+    }
+    this.notify();
+  }
+  /**
+   * `workspace.on("file-open")`.
+   *
+   * Opening a note inside a tab that already had focus does not fire
+   * `active-leaf-change`, so without this the tracker would keep naming the
+   * file that tab used to show and every insert would be refused.
+   */
+  handleFileOpen(file) {
+    if (file !== null) {
+      const view = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+      if (view && !this.isIgnored(view.leaf)) this.remember(view.leaf, view);
+    }
+    this.notify();
+  }
+  /**
+   * The editor to write into, or `null` when there is nowhere safe to write.
+   *
+   * Both checks matter: a leaf closed since it was tracked is detached, and
+   * writing to it edits a view nobody can see, while a tab that has since
+   * changed file is a different note than the one that was pointed at.
+   */
+  resolve() {
+    var _a2, _b2;
+    const leaf = this.leaf;
+    const filePath = this.filePath;
+    if (leaf === null || filePath === null) return null;
+    if (!this.isAttached(leaf)) {
+      this.forget();
+      return null;
+    }
+    const view = leaf.view;
+    if (!(view instanceof import_obsidian6.MarkdownView)) return null;
+    if (((_b2 = (_a2 = view.file) == null ? void 0 : _a2.path) != null ? _b2 : null) !== filePath) return null;
+    return { editor: view.editor, filePath };
+  }
+  /** Whether an insert is possible at all, for the buttons' enabled state. */
+  hasTarget() {
+    return this.resolve() !== null;
+  }
+  /** Subscribes to target changes; the returned function unsubscribes. */
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  dispose() {
+    this.listeners.clear();
+    this.forget();
+  }
+  remember(leaf, view) {
+    var _a2, _b2;
+    const path = (_b2 = (_a2 = view.file) == null ? void 0 : _a2.path) != null ? _b2 : null;
+    if (path === null) return;
+    this.leaf = leaf;
+    this.filePath = path;
+  }
+  forget() {
+    this.leaf = null;
+    this.filePath = null;
+  }
+  /**
+   * `getLeavesOfType` walks every window, so a note in a popout counts as
+   * attached; a leaf the user closed is in no window and does not.
+   */
+  isAttached(leaf) {
+    return this.app.workspace.getLeavesOfType("markdown").includes(leaf);
+  }
+  notify() {
+    if (this.leaf !== null && !this.isAttached(this.leaf)) this.forget();
+    for (const listener of [...this.listeners]) listener();
+  }
+};
 
 // src/ui/view-file-modal.ts
-var import_obsidian6 = require("obsidian");
-var ViewFileModal = class extends import_obsidian6.Modal {
+var import_obsidian7 = require("obsidian");
+var ViewFileModal = class extends import_obsidian7.Modal {
   constructor(app, options) {
     super(app);
     this.options = options;
@@ -18155,10 +18346,10 @@ var ViewFileModal = class extends import_obsidian6.Modal {
     textarea.value = this.options.contents;
     textarea.readOnly = true;
     textarea.spellcheck = false;
-    new import_obsidian6.Setting(contentEl).addButton(
+    new import_obsidian7.Setting(contentEl).addButton(
       (button) => button.setButtonText("Copy to clipboard").setCta().onClick(async () => {
         await navigator.clipboard.writeText(this.options.contents);
-        new import_obsidian6.Notice("Copied to clipboard.");
+        new import_obsidian7.Notice("Copied to clipboard.");
       })
     );
   }
@@ -18168,8 +18359,8 @@ var ViewFileModal = class extends import_obsidian6.Modal {
 };
 
 // src/ui/import-modal.ts
-var import_obsidian7 = require("obsidian");
-var ImportModal = class extends import_obsidian7.Modal {
+var import_obsidian8 = require("obsidian");
+var ImportModal = class extends import_obsidian8.Modal {
   constructor(app, onParsed) {
     super(app);
     this.onParsed = onParsed;
@@ -18192,7 +18383,7 @@ var ImportModal = class extends import_obsidian7.Modal {
       this.text = textarea.value;
       error.hide();
     });
-    new import_obsidian7.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton(
+    new import_obsidian8.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton(
       (button) => button.setButtonText("Import").setCta().onClick(() => {
         const parsed = parseCatalog(this.text);
         if (!parsed.ok) {
@@ -18211,9 +18402,9 @@ var ImportModal = class extends import_obsidian7.Modal {
 };
 
 // src/ui/settings-tab.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 var GITHUB_URL = "https://github.com/jsglazer/equation-library";
-var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab {
+var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -18232,26 +18423,23 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian8.Setting(containerEl).setName("Library").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Close after inserting").setDesc("Close the library popup once an equation has been inserted.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.closeOnInsert).onChange((value) => void this.plugin.updateSettings({ closeOnInsert: value }))
-    );
-    new import_obsidian8.Setting(containerEl).setName("Insert format").setDesc("Which delimiters an unmodified insert uses. Holding shift always inserts a block equation.").addDropdown(
+    new import_obsidian9.Setting(containerEl).setName("Library").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Insert format").setDesc("Which delimiters an unmodified insert uses. Holding shift always inserts a block equation.").addDropdown(
       (dropdown) => dropdown.addOptions({ inline: "Inline \u2014 $\u2026$", "always-block": "Always block \u2014 $$\u2026$$" }).setValue(this.plugin.settings.insertFormat).onChange((value) => void this.plugin.updateSettings({ insertFormat: value }))
     );
-    new import_obsidian8.Setting(containerEl).setName("Editor autocomplete").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Enable autocomplete").setDesc("Suggest library equations in the editor. Always off on phones, where the popup fights the on-screen keyboard.").addToggle(
+    new import_obsidian9.Setting(containerEl).setName("Editor autocomplete").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Enable autocomplete").setDesc("Suggest library equations in the editor. Always off on phones, where the popup fights the on-screen keyboard.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.suggestEnabled).onChange((value) => void this.plugin.updateSettings({ suggestEnabled: value }))
     );
-    new import_obsidian8.Setting(containerEl).setName("Trigger").setDesc(`The characters that open the suggester. Default ${DEFAULT_TRIGGER}. A single $ is never a trigger, so ordinary math typing is untouched.`).addText(
+    new import_obsidian9.Setting(containerEl).setName("Trigger").setDesc(`The characters that open the suggester. Default ${DEFAULT_TRIGGER}. A single $ is never a trigger, so ordinary math typing is untouched.`).addText(
       (text) => text.setPlaceholder(DEFAULT_TRIGGER).setValue(this.plugin.settings.suggestTrigger).onChange((value) => {
         const trigger = value.trim();
         if (trigger.length === 0) return;
         void this.plugin.updateSettings({ suggestTrigger: trigger });
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("Storage").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Library folder").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Storage").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Library folder").setDesc(
       `Vault folder whose notes make up the library. A note is an equation when its frontmatter has the LaTeX key; anything else in the folder is ignored. Default ${DEFAULT_LIBRARY_FOLDER}.`
     ).addText((text) => {
       text.setPlaceholder(DEFAULT_LIBRARY_FOLDER).setValue(this.plugin.settings.libraryFolder);
@@ -18264,7 +18452,7 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
         });
       });
     });
-    new import_obsidian8.Setting(containerEl).setName("Template note").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Template note").setDesc(
       "Optional. A note whose frontmatter keys and body are copied into every new equation note, so your own fields and boilerplate appear alongside the plugin's. Template tags such as <% \u2026 %> are blanked."
     ).addText((text) => {
       text.setPlaceholder("Templates/equation.md").setValue(this.plugin.settings.templatePath);
@@ -18273,14 +18461,14 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
         void this.plugin.updateSettings({ templatePath: value.trim() });
       });
     });
-    new import_obsidian8.Setting(containerEl).setName("New note file name prefix").setDesc(`Prepended to the equation's name to make the file name, so "Bayes Theorem" becomes ${DEFAULT_FILE_PREFIX}Bayes-Theorem.md. May be empty.`).addText((text) => {
+    new import_obsidian9.Setting(containerEl).setName("New note file name prefix").setDesc(`Prepended to the equation's name to make the file name, so "Bayes Theorem" becomes ${DEFAULT_FILE_PREFIX}Bayes-Theorem.md. May be empty.`).addText((text) => {
       text.setPlaceholder(DEFAULT_FILE_PREFIX).setValue(this.plugin.settings.filePrefix);
       this.commitOnBlur(text, (value) => {
         if (value.trim() === this.plugin.settings.filePrefix) return;
         void this.plugin.updateSettings({ filePrefix: value.trim() });
       });
     });
-    new import_obsidian8.Setting(containerEl).setName("Frontmatter keys").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Frontmatter keys").setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text: "The keys the plugin reads and writes in an equation note. Every other key, and the whole body, is left exactly as you wrote it. The name, LaTeX, symbol, category and note keys are written; usage and source are only read, for the filter and the search."
@@ -18295,7 +18483,7 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
       ["source", "Source", "Where it came from. Read only, for the search."]
     ];
     for (const [field, label, desc] of keyRows) {
-      new import_obsidian8.Setting(containerEl).setName(label).setDesc(`${desc} Default ${DEFAULT_KEYS[field]}.`).addText((text) => {
+      new import_obsidian9.Setting(containerEl).setName(label).setDesc(`${desc} Default ${DEFAULT_KEYS[field]}.`).addText((text) => {
         text.setPlaceholder(DEFAULT_KEYS[field]).setValue(this.plugin.settings.keys[field]);
         this.commitOnBlur(text, (value) => {
           const key = value.trim();
@@ -18304,22 +18492,22 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
         });
       });
     }
-    new import_obsidian8.Setting(containerEl).setName("Log").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Log size limit").setDesc("Entries kept in the log file. The oldest are dropped first; a smaller limit keeps mobile memory use low.").addDropdown(
+    new import_obsidian9.Setting(containerEl).setName("Log").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Log size limit").setDesc("Entries kept in the log file. The oldest are dropped first; a smaller limit keeps mobile memory use low.").addDropdown(
       (dropdown) => dropdown.addOptions({ "100": "100 entries", "500": "500 entries", "1000": "1000 entries", off: "No limit" }).setValue(String(this.plugin.settings.logCap)).onChange((value) => {
         const cap = value === "off" ? "off" : Number(value);
         void this.plugin.updateSettings({ logCap: cap }).then(() => this.plugin.recapLog());
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("Equation log").setDesc(this.plugin.logStore.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
-    new import_obsidian8.Setting(containerEl).setName("Import and export").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Export library").setDesc("Write a JSON snapshot of every equation to a path in this vault.").addButton((button) => button.setButtonText("Export").onClick(() => this.plugin.promptExport()));
-    new import_obsidian8.Setting(containerEl).setName("Import equations").setDesc("Paste an exported catalog, including an equations.json from before version 1.1. Each equation becomes a note; LaTeX already in the library is skipped.").addButton((button) => button.setButtonText("Import").onClick(() => void this.plugin.promptImport()));
-    new import_obsidian8.Setting(containerEl).setName("About").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Equation Library").setDesc(`Version ${this.plugin.manifest.version}`).addButton(
+    new import_obsidian9.Setting(containerEl).setName("Equation log").setDesc(this.plugin.logStore.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
+    new import_obsidian9.Setting(containerEl).setName("Import and export").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Export library").setDesc("Write a JSON snapshot of every equation to a path in this vault.").addButton((button) => button.setButtonText("Export").onClick(() => this.plugin.promptExport()));
+    new import_obsidian9.Setting(containerEl).setName("Import equations").setDesc("Paste an exported catalog, including an equations.json from before version 1.1. Each equation becomes a note; LaTeX already in the library is skipped.").addButton((button) => button.setButtonText("Import").onClick(() => void this.plugin.promptImport()));
+    new import_obsidian9.Setting(containerEl).setName("About").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Equation Library").setDesc(`Version ${this.plugin.manifest.version}`).addButton(
       (button) => button.setButtonText("GitHub").setTooltip(GITHUB_URL).onClick(() => {
         window.open(GITHUB_URL, "_blank");
-        new import_obsidian8.Notice("Opened the plugin page in your browser.");
+        new import_obsidian9.Notice("Opened the plugin page in your browser.");
       })
     );
   }
@@ -18327,7 +18515,7 @@ var EquationLibrarySettingTab = class extends import_obsidian8.PluginSettingTab 
 
 // src/main.ts
 var DEFAULT_EXPORT_PATH = "equation-library-export.json";
-var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
+var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -18349,28 +18537,36 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
       saveCategories: (categories) => this.updateSettings({ categories })
     });
     this.noticeLegacyCatalog(raw);
-    configureMathLive({ virtualKeyboard: import_obsidian9.Platform.isMobile });
+    configureMathLive({ virtualKeyboard: import_obsidian10.Platform.isMobile });
+    this.editors = new EditorTracker(this.app, (leaf) => leaf.view instanceof EquationLibraryView);
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => this.editors.handleActiveLeafChange(leaf))
+    );
+    this.registerEvent(this.app.workspace.on("file-open", (file) => this.editors.handleFileOpen(file)));
+    this.registerView(LIBRARY_VIEW_TYPE, (leaf) => new EquationLibraryView(leaf, this.viewDeps()));
     this.addCommand({
       id: "show-equation-library",
       name: "Show Equation Library",
       // Opening from inside an equation loads that equation, so the command
       // doubles as "edit this equation".
-      callback: () => {
-        var _a2, _b2;
-        return this.openLibrary(this.prefillFromEditor((_b2 = (_a2 = this.app.workspace.activeEditor) == null ? void 0 : _a2.editor) != null ? _b2 : null));
-      }
+      callback: () => void this.openLibrary(this.prefillFromActiveEditor())
     });
-    this.addRibbonIcon("sigma", "Show Equation Library", () => this.openLibrary());
+    this.addCommand({
+      id: "show-equation-library-window",
+      name: "Show Equation Library in a new window",
+      callback: () => void this.openLibrary(this.prefillFromActiveEditor(), true)
+    });
+    this.addRibbonIcon("sigma", "Show Equation Library", () => void this.openLibrary());
     this.registerDomEvent(document, "contextmenu", (event) => {
       this.lastContextMenu = event;
     }, { capture: true });
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
-        void info;
-        const prefill = this.prefillFromEditor(editor, this.lastContextMenu);
+        var _a2, _b2;
+        const prefill = this.prefillFromEditor(editor, (_b2 = (_a2 = info.file) == null ? void 0 : _a2.path) != null ? _b2 : null, this.lastContextMenu);
         if (prefill === void 0) return;
         menu.addItem(
-          (item) => item.setTitle("Edit equation in Equation Library").setIcon("sigma").onClick(() => this.openLibrary(prefill))
+          (item) => item.setTitle("Edit equation in Equation Library").setIcon("sigma").onClick(() => void this.openLibrary(prefill))
         );
       })
     );
@@ -18398,8 +18594,11 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
       })
     );
     this.addSettingTab(new EquationLibrarySettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(() => this.editors.syncFromWorkspace());
   }
   onunload() {
+    this.editors.dispose();
+    for (const leaf of this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)) leaf.detach();
     removeMathLiveStyles();
   }
   /**
@@ -18412,7 +18611,7 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
     const record = raw;
     if (!("catalogPath" in record) && !("catalogLocation" in record)) return;
     const path = typeof record.catalogPath === "string" ? record.catalogPath : "equations.json";
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       `Equation Library now keeps equations as notes in "${this.settings.libraryFolder}". Your old ${path} is no longer read \u2014 paste it into Settings \u2192 Import to turn it into notes.`,
       15e3
     );
@@ -18432,15 +18631,24 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
    * `$$…$$` block spans lines and a fenced code block above the cursor changes
    * what counts as math below it.
    */
-  prefillFromEditor(editor, event = null) {
+  prefillFromEditor(editor, filePath, event = null) {
     if (!editor) return void 0;
     const span = findMathSpanAt(editor.getValue(), this.offsetAt(editor, event));
     if (span === null) return void 0;
     return {
       latex: span.latex,
       mode: span.mode,
-      range: { from: editor.offsetToPos(span.start), to: editor.offsetToPos(span.end) }
+      range: { from: editor.offsetToPos(span.start), to: editor.offsetToPos(span.end) },
+      // The panel stays open across note switches, so an edit-in-place has to
+      // remember which note its coordinates belong to.
+      filePath: filePath != null ? filePath : void 0
     };
+  }
+  /** The equation under the caret in the note that has focus right now. */
+  prefillFromActiveEditor() {
+    var _a2, _b2, _c2;
+    const active = this.app.workspace.activeEditor;
+    return this.prefillFromEditor((_a2 = active == null ? void 0 : active.editor) != null ? _a2 : null, (_c2 = (_b2 = active == null ? void 0 : active.file) == null ? void 0 : _b2.path) != null ? _c2 : null);
   }
   /** The document offset a click landed on, falling back to the caret. */
   offsetAt(editor, event) {
@@ -18451,11 +18659,8 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
     }
     return editor.posToOffset(editor.getCursor());
   }
-  openLibrary(prefill) {
-    var _a2, _b2;
-    const fromPath = (_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : "";
-    new LibraryModal(this.app, {
-      prefill,
+  viewDeps() {
+    return {
       version: this.manifest.version,
       getSettings: () => this.settings,
       saveSettings: (patch) => this.updateSettings(patch),
@@ -18464,18 +18669,50 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
       loadCatalog: () => this.noteStore.loadCatalog(),
       saveCatalog: (previous, next) => this.noteStore.applyCatalog(previous, next),
       openNote: (id2) => this.noteStore.openNote(id2, false),
-      linkFor: (id2) => this.noteStore.linkFor(id2, fromPath),
+      // Resolved per link, not per open: a link is relative to the note it is
+      // being written into, and with a panel that note changes underneath.
+      linkFor: (id2) => {
+        var _a2, _b2;
+        return this.noteStore.linkFor(id2, (_b2 = (_a2 = this.editors.resolve()) == null ? void 0 : _a2.filePath) != null ? _b2 : "");
+      },
       log: (request) => this.log(request),
       mintId: () => `new:${crypto.randomUUID()}`,
       now: () => (/* @__PURE__ */ new Date()).toISOString(),
-      isMobile: import_obsidian9.Platform.isMobile
-    }).open();
+      isMobile: import_obsidian10.Platform.isMobile,
+      getEditor: () => this.editors.resolve(),
+      onEditorChange: (listener) => this.editors.subscribe(listener)
+    };
+  }
+  /**
+   * Shows the library panel, reusing the one already open rather than stacking
+   * a second copy, and loads `prefill` into it either way.
+   *
+   * The panel is revealed but never focused: the user asked for the library
+   * while typing in a note, and taking the caret out of that note is exactly
+   * what the move away from a modal was meant to stop. A popout is the one
+   * exception — a window the user just asked for should come to the front.
+   */
+  async openLibrary(prefill, popout = false) {
+    const leaf = popout ? this.app.workspace.openPopoutLeaf() : this.libraryLeaf();
+    if (!(leaf.view instanceof EquationLibraryView)) {
+      await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: popout });
+    }
+    if (!popout) this.app.workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (view instanceof EquationLibraryView) view.setPrefill(prefill);
+  }
+  /** The open library panel, or a fresh leaf in the right sidebar. */
+  libraryLeaf() {
+    var _a2;
+    const open = this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE);
+    if (open.length > 0) return open[0];
+    return (_a2 = this.app.workspace.getRightLeaf(false)) != null ? _a2 : this.app.workspace.getLeaf(true);
   }
   /** Queues one log entry. Fire-and-forget: a log failure never blocks an edit. */
   log(request) {
     const entry = createLogEntry({ ...request, now: (/* @__PURE__ */ new Date()).toISOString() });
     void this.logStore.appendLog(entry, this.settings.logCap).catch((error) => {
-      new import_obsidian9.Notice(`Equation Library: could not write the log (${String(error)}).`);
+      new import_obsidian10.Notice(`Equation Library: could not write the log (${String(error)}).`);
     });
   }
   async showLogFile() {
@@ -18501,7 +18738,7 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
         void (async () => {
           const catalog = await this.noteStore.loadCatalog();
           const path = await this.logStore.writeVaultFile(value.trim(), serializeCatalog(catalog));
-          new import_obsidian9.Notice(`Exported ${catalog.equations.length} equations to ${path}.`);
+          new import_obsidian10.Notice(`Exported ${catalog.equations.length} equations to ${path}.`);
         })();
       }
     ).open();
@@ -18512,8 +18749,8 @@ var EquationLibraryPlugin = class extends import_obsidian9.Plugin {
         const existing = await this.noteStore.loadCatalog();
         const plan = planImport(existing, parsed.catalog);
         const created = await this.noteStore.createNotes(plan.toCreate);
-        for (const warning of parsed.warnings) new import_obsidian9.Notice(`Equation Library: ${warning}`);
-        new import_obsidian9.Notice(
+        for (const warning of parsed.warnings) new import_obsidian10.Notice(`Equation Library: ${warning}`);
+        new import_obsidian10.Notice(
           `Imported ${created} equation${created === 1 ? "" : "s"} as notes` + (plan.skipped.length > 0 ? `, ${plan.skipped.length} already in the library` : "") + "."
         );
       })();

@@ -1,15 +1,33 @@
 /**
- * The Equation Library popup: a grid of rendered equations on top, a live
+ * The Equation Library panel: a grid of rendered equations on top, a live
  * generator underneath.
  *
+ * This used to be a `Modal`. It is now an `ItemView` living in a workspace
+ * leaf — a sidebar panel, or a popout window — so it can stay open while the
+ * note underneath is being written. `Modal` could not do that at any price: it
+ * paints a click-swallowing `.modal-bg` overlay and owns the keyboard scope,
+ * both by construction.
+ *
+ * `LibraryRenderer` holds the UI and is host-agnostic: it draws into whatever
+ * element it is handed and never touches the leaf it sits in. The `ItemView` at
+ * the bottom of this file is a thin mount for it.
+ *
  * All decision logic — search, sort, category filtering, catalog edits,
- * delimiter handling — lives in `src/core/`. This class reads the catalog,
- * draws it, and applies the results of those pure functions.
+ * delimiter handling, re-finding a moved equation — lives in `src/core/`. This
+ * file reads the catalog, draws it, and applies the results of those pure
+ * functions.
  */
-import { App, ButtonComponent, Editor, EditorPosition, Menu, Modal, Notice, Platform, Setting } from "obsidian";
+import { App, ButtonComponent, EditorPosition, ItemView, Menu, Notice, Platform, WorkspaceLeaf } from "obsidian";
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
-import { InsertMode, isInsideMath, resolveInsertMode, stripDelimiters, wrapDelimiters } from "../core/latex";
+import {
+	InsertMode,
+	isInsideMath,
+	relocateMathSpan,
+	resolveInsertMode,
+	stripDelimiters,
+	wrapDelimiters,
+} from "../core/latex";
 import { SortOrder, allUsages, searchEquations } from "../core/search";
 import {
 	addCategory,
@@ -28,7 +46,10 @@ import {
 	hideVirtualKeyboard,
 	renderLatexInto,
 } from "./mathlive-adapter";
+import { EditorTarget } from "./editor-tracker";
 import { PromptModal } from "./prompt-modal";
+
+export const LIBRARY_VIEW_TYPE = "equation-library";
 
 export interface LogRequest {
 	readonly action: LogAction;
@@ -38,19 +59,21 @@ export interface LogRequest {
 }
 
 /**
- * An equation the modal should open with already loaded in the generator.
+ * An equation the panel should open with already loaded in the generator.
  *
  * `range` is the span in the document the LaTeX came from: when it is present
  * an insert rewrites that span in place — editing an equation where it sits —
- * rather than adding a second copy at the cursor.
+ * rather than adding a second copy at the cursor. `filePath` records which note
+ * that span was in, because the panel outlives the note being on screen.
  */
 export interface GeneratorPrefill {
 	readonly latex: string;
 	readonly mode: InsertMode;
 	readonly range?: { readonly from: EditorPosition; readonly to: EditorPosition };
+	readonly filePath?: string;
 }
 
-export interface LibraryModalDeps {
+export interface LibraryViewDeps {
 	readonly version: string;
 	readonly getSettings: () => EquationLibrarySettings;
 	readonly saveSettings: (patch: Partial<EquationLibrarySettings>) => Promise<void>;
@@ -69,19 +92,35 @@ export interface LibraryModalDeps {
 	readonly mintId: () => string;
 	readonly now: () => string;
 	readonly isMobile: boolean;
-	/** Equation under the cursor, loaded into the generator on open. */
-	readonly prefill?: GeneratorPrefill;
+	/**
+	 * The note to insert into, resolved fresh on every call.
+	 *
+	 * This replaced an `Editor` captured when the popup opened: with a non-modal
+	 * panel that capture goes stale the moment the user switches or closes a tab.
+	 */
+	readonly getEditor: () => EditorTarget | null;
+	/** Fires when that target changes, so the insert buttons can follow it. */
+	readonly onEditorChange: (listener: () => void) => () => void;
 }
 
 const ALL_CATEGORIES = "__all__";
 const ALL_USAGES = "__all__";
+
+/** An edit-in-place waiting to be applied, and where it came from. */
+interface PendingReplace {
+	readonly range: { readonly from: EditorPosition; readonly to: EditorPosition };
+	/** The LaTeX as it stood in the document, used to find the span again. */
+	readonly latex: string;
+	readonly mode: InsertMode;
+	readonly filePath?: string;
+}
 
 /** `symbol = latex` when the equation has a symbol, otherwise just the LaTeX. */
 function withSymbol(equation: Equation): string {
 	return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
 }
 
-export class LibraryModal extends Modal {
+export class LibraryRenderer {
 	private catalog: Catalog = { schemaVersion: 1, categories: [UNCATEGORIZED], equations: [] };
 	private searchText = "";
 	private category: string | null;
@@ -95,18 +134,13 @@ export class LibraryModal extends Modal {
 	 */
 	private busy = false;
 
-	/**
-	 * The editor is resolved once, here, and held for the modal's lifetime: an
-	 * open modal holds focus, so asking the workspace for the active editor at
-	 * button-click time would find nothing.
-	 */
-	private readonly editor: Editor | null;
-
+	private rootEl!: HTMLElement;
 	private gridEl!: HTMLElement;
 	private scrollEl!: HTMLElement;
 	private observer: IntersectionObserver | null = null;
+	private unsubscribeEditor: (() => void) | null = null;
 	private readonly pending = new Map<HTMLElement, Equation>();
-	/** Rendered markup, cached for the modal's lifetime and keyed by content. */
+	/** Rendered markup, cached for the panel's lifetime and keyed by content. */
 	private readonly markupCache = new Map<string, string>();
 
 	private mathField: MathFieldHandle | null = null;
@@ -121,83 +155,65 @@ export class LibraryModal extends Modal {
 	private insertButtons: ButtonComponent[] = [];
 	private updateButton: ButtonComponent | null = null;
 	private openNoteButton: ButtonComponent | null = null;
-	private searchInput!: HTMLInputElement;
 	/** The equation the generator is editing, or null when building a fresh one. */
 	private editingEquationId: string | null = null;
-	/**
-	 * The document span an insert should overwrite, taken from the prefill.
-	 *
-	 * Cleared after the first insert: the positions describe the document as it
-	 * was when the modal opened, and rewriting the span invalidates them.
-	 */
-	private replaceRange: GeneratorPrefill["range"] | null = null;
-	private replaceMode: InsertMode = "inline";
+	/** The pending edit-in-place, or null when an insert goes at the cursor. */
+	private replace: PendingReplace | null = null;
 
-	constructor(app: App, private readonly deps: LibraryModalDeps) {
-		super(app);
+	constructor(private readonly app: App, private readonly deps: LibraryViewDeps) {
 		const settings = deps.getSettings();
 		this.category = settings.lastCategory;
 		this.sort = settings.sortOrder;
-		this.editor = app.workspace.activeEditor?.editor ?? null;
 	}
 
-	onOpen(): void {
-		const { contentEl, modalEl } = this;
-		modalEl.addClass("eqlib-modal");
-		contentEl.empty();
-		contentEl.addClass("eqlib-content");
+	/**
+	 * Draws the panel into `parent`.
+	 *
+	 * Nothing here takes focus. The modal fought Obsidian for the caret on open
+	 * — the Search Equations field won it, which was right when the workspace
+	 * was frozen behind the modal. In a docked panel the same code would yank
+	 * the cursor out of the note being typed in, so the panel now takes focus
+	 * only when it is clicked. The search field is still the first tabbable
+	 * element, so one Tab reaches it.
+	 */
+	mount(parent: HTMLElement): void {
+		this.rootEl = parent;
+		parent.empty();
+		parent.addClass("eqlib-content", "eqlib-panel");
 
-		this.buildToolbar(contentEl);
-		this.scrollEl = contentEl.createDiv({ cls: "eqlib-grid-scroll" });
+		this.buildToolbar(parent);
+		this.scrollEl = parent.createDiv({ cls: "eqlib-grid-scroll" });
 		this.gridEl = this.scrollEl.createDiv({ cls: "eqlib-grid" });
-		this.buildGenerator(contentEl);
-		this.buildFooter(contentEl);
-		this.registerShortcuts(contentEl);
-		this.focusSearchInput();
+		this.buildGenerator(parent);
+		this.buildFooter(parent);
+		this.registerShortcuts(parent);
 
-		const win = contentEl.win as Window & typeof globalThis;
+		const win = parent.win as Window & typeof globalThis;
 		this.observer = new win.IntersectionObserver((entries) => this.onIntersect(entries), {
 			root: this.scrollEl,
 			rootMargin: "200px",
 		});
 
+		this.unsubscribeEditor = this.deps.onEditorChange(() => this.refreshEditorState());
+		this.refreshEditorState();
+
 		void this.refreshCatalog();
 	}
 
 	/**
-	 * Puts the caret in the Search Equations field, so typing filters the grid.
-	 *
-	 * Obsidian moves focus after `onOpen` returns, so focusing once here can be
-	 * undone a moment later. The deferred calls run after that, and re-check the
-	 * field is still on screen in case the modal was closed in between.
-	 */
-	private focusSearchInput(): void {
-		const focus = () => {
-			if (!this.searchInput.isConnected) return;
-			this.searchInput.focus();
-		};
-		focus();
-		const win = this.contentEl.win as Window & typeof globalThis;
-		// Both deferrals fire inside the same frame; which one lands after
-		// Obsidian's own focus call depends on the platform, so run both.
-		win.setTimeout(focus, 0);
-		win.requestAnimationFrame(focus);
-	}
-
-	/**
 	 * Cmd/Ctrl+Return runs the primary action — Insert at cursor, or Replace in
-	 * note when the modal was opened on an equation in the document — and
-	 * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the modal
-	 * content rather than per field so they fire from the LaTeX box, the name,
-	 * the note or a focused button alike.
+	 * note when the panel was opened on an equation in the document — and
+	 * Cmd/Ctrl+Shift+Return runs Add & Insert. They are bound on the panel body
+	 * rather than per field so they fire from the LaTeX box, the name, the note
+	 * or a focused button alike.
 	 *
-	 * Neither fires without an editor to insert into, which is the same
-	 * condition that disables the two buttons.
+	 * Neither fires without a note to insert into, which is the same condition
+	 * that disables the two buttons — and it is tested now, not at open.
 	 */
-	private registerShortcuts(contentEl: HTMLElement): void {
-		contentEl.addEventListener("keydown", (event) => {
+	private registerShortcuts(parent: HTMLElement): void {
+		parent.addEventListener("keydown", (event) => {
 			if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
-			if (this.editor === null) {
+			if (this.deps.getEditor() === null) {
 				new Notice("Open a markdown note to insert an equation.");
 				return;
 			}
@@ -209,9 +225,11 @@ export class LibraryModal extends Modal {
 		});
 	}
 
-	onClose(): void {
+	unmount(): void {
 		this.observer?.disconnect();
 		this.observer = null;
+		this.unsubscribeEditor?.();
+		this.unsubscribeEditor = null;
 		this.pending.clear();
 		this.mathField?.destroy();
 		this.mathField = null;
@@ -219,7 +237,7 @@ export class LibraryModal extends Modal {
 		this.updateButton = null;
 		this.openNoteButton = null;
 		hideVirtualKeyboard();
-		this.contentEl.empty();
+		this.rootEl?.empty();
 	}
 
 	// ---------------------------------------------------------------- chrome
@@ -228,7 +246,6 @@ export class LibraryModal extends Modal {
 		const bar = parent.createDiv({ cls: "eqlib-toolbar" });
 
 		const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
-		this.searchInput = search;
 		search.placeholder = "Search equations";
 		search.addEventListener("input", () => {
 			this.searchText = search.value;
@@ -401,57 +418,76 @@ export class LibraryModal extends Modal {
 			});
 		this.openNoteButton.buttonEl.hide();
 
-		// "Add to Library" stays available with no editor open; the two insert
-		// actions cannot work without one and say so.
-		if (this.editor === null) {
-			for (const button of this.insertButtons) {
-				button.setDisabled(true);
-				button.setTooltip("Open a markdown note to insert an equation.");
-			}
-		}
 		addButton.setTooltip("Save this equation to the library.");
-
-		this.applyPrefill();
 	}
 
-	/**
-	 * Loads the equation the cursor was sitting in, if the caller found one.
-	 *
-	 * The name and category stay empty until `refreshCatalog` finds a library
-	 * equation with the same LaTeX, which is what turns this into an edit of a
-	 * saved equation rather than a fresh one.
-	 */
 	/** The modifier the platform actually uses, for tooltips. */
 	private modifierLabel(): string {
 		return Platform.isMacOS ? "Cmd" : "Ctrl";
 	}
 
-	private applyPrefill(): void {
-		const prefill = this.deps.prefill;
+	/**
+	 * Enables or disables the two insert actions for the note situation right
+	 * now.
+	 *
+	 * "Add to Library" stays available with no note open; the two insert actions
+	 * cannot work without one and say so. The modal decided this once, when it
+	 * opened, and was then stuck with the answer — a panel that outlives the note
+	 * it was opened next to has to keep asking.
+	 */
+	private refreshEditorState(): void {
+		const hasEditor = this.deps.getEditor() !== null;
+		for (const [index, button] of this.insertButtons.entries()) {
+			button.setDisabled(!hasEditor);
+			if (!hasEditor) {
+				button.setTooltip("Open a markdown note to insert an equation.");
+			} else if (index === 0) {
+				button.setTooltip(
+					this.replace
+						? `Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).`
+						: `Insert the equation into the note (${this.modifierLabel()}+Return).`,
+				);
+			} else {
+				button.setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`);
+			}
+		}
+	}
+
+	/**
+	 * Loads an equation found in the document into the generator.
+	 *
+	 * Called both when the panel is first opened on an equation and when it is
+	 * already open and "Edit equation in Equation Library" is chosen again,
+	 * which is now possible because the panel never closed.
+	 */
+	loadPrefill(prefill: GeneratorPrefill | undefined): void {
 		if (!prefill || prefill.latex.length === 0) return;
 		this.latex = stripDelimiters(prefill.latex);
 		this.latexInput.value = this.latex;
 		this.mathField?.setLatex(this.latex);
-		this.replaceRange = prefill.range ?? null;
-		this.replaceMode = prefill.mode;
-		// The primary action is no longer "add a copy at the cursor".
-		if (this.replaceRange) {
-			this.insertButtons[0]
-				?.setButtonText("Replace in note")
-				.setTooltip(`Rewrite the equation where it sits in the note (${this.modifierLabel()}+Return).`);
-		}
+		// A second prefill is a different equation: the fields and the identity
+		// of the one before it must not linger.
+		this.editingEquationId = null;
+		this.nameInput.value = "";
+		this.symbolInput.value = "";
+		this.noteInput.value = "";
+		this.updateButton?.buttonEl.hide();
+		this.openNoteButton?.buttonEl.hide();
+		this.replace = prefill.range
+			? { range: prefill.range, latex: this.latex, mode: prefill.mode, filePath: prefill.filePath }
+			: null;
+		this.setPrimaryButton();
+		this.adoptPrefilledEquation();
+		this.refreshEditorState();
+	}
+
+	/** The primary button says what it will do: replace in place, or insert. */
+	private setPrimaryButton(): void {
+		this.insertButtons[0]?.setButtonText(this.replace ? "Replace in note" : "Insert at cursor");
 	}
 
 	private buildFooter(parent: HTMLElement): void {
 		const footer = parent.createDiv({ cls: "eqlib-footer" });
-		new Setting(footer)
-			.setName("Close after inserting")
-			.setClass("eqlib-close-setting")
-			.addToggle((toggle) =>
-				toggle.setValue(this.deps.getSettings().closeOnInsert).onChange((value) => {
-					void this.deps.saveSettings({ closeOnInsert: value });
-				}),
-			);
 		footer.createDiv({ cls: "eqlib-version", text: `v${this.deps.version}` });
 	}
 
@@ -466,12 +502,11 @@ export class LibraryModal extends Modal {
 	}
 
 	/**
-	 * If the prefilled LaTeX is already in the library, adopt that equation's
-	 * name, category and identity so Update saves back to it.
+	 * If the LaTeX in the generator is already in the library, adopt that
+	 * equation's name, category and identity so Update saves back to it.
 	 */
 	private adoptPrefilledEquation(): void {
 		if (this.editingEquationId !== null || this.latex.length === 0) return;
-		if (this.deps.prefill === undefined) return;
 		const match = this.catalog.equations.find((equation) => equation.latex === this.latex);
 		if (!match) return;
 		this.adoptEquation(match);
@@ -490,7 +525,7 @@ export class LibraryModal extends Modal {
 	}
 
 	private syncCategorySelectors(): void {
-		const filter = this.contentEl.querySelector<HTMLSelectElement>(".eqlib-category-filter");
+		const filter = this.rootEl.querySelector<HTMLSelectElement>(".eqlib-category-filter");
 		if (filter) this.fillCategoryFilter(filter);
 
 		const select = this.generatorCategoryEl;
@@ -605,11 +640,19 @@ export class LibraryModal extends Modal {
 
 	// -------------------------------------------------------------- actions
 
+	/**
+	 * Picking an equation out of the library is a fresh insert, so it clears any
+	 * pending edit-in-place: that range belongs to the equation loaded from the
+	 * document, not to this one.
+	 */
 	private loadIntoGenerator(equation: Equation): void {
 		this.latex = equation.latex;
 		this.latexInput.value = equation.latex;
 		this.mathField?.setLatex(equation.latex);
 		this.adoptEquation(equation);
+		this.replace = null;
+		this.setPrimaryButton();
+		this.refreshEditorState();
 	}
 
 	private currentLatex(): string {
@@ -621,34 +664,64 @@ export class LibraryModal extends Modal {
 	}
 
 	/**
+	 * Writes the equation into the note, either over the span it came from or at
+	 * the cursor.
+	 *
 	 * Inserting inside a `$...$` or `$$...$$` span already open at the cursor
-	 * drops the delimiters — adding another pair would either break the
-	 * existing equation or start a nested one.
+	 * drops the delimiters — adding another pair would either break the existing
+	 * equation or start a nested one.
 	 */
 	private insertIntoEditor(latex: string, event: MouseEvent | KeyboardEvent | undefined): boolean {
-		if (!this.editor) {
+		const target = this.deps.getEditor();
+		if (!target) {
 			new Notice("Open a markdown note first — there is nowhere to insert.");
 			return false;
 		}
+
 		// An equation opened from the document is rewritten where it sits, in the
-		// delimiters it already had; the positions are good for one insert only.
-		const range = this.replaceRange;
-		if (range) {
-			this.replaceRange = null;
-			this.editor.replaceRange(wrapDelimiters(latex, this.replaceMode), range.from, range.to);
-			this.editor.setCursor(range.from);
-			return true;
+		// delimiters it already had — but only where it *now* sits.
+		const pending = this.replace;
+		if (pending) {
+			this.replace = null;
+			this.setPrimaryButton();
+			const range = this.resolveReplaceRange(target, pending);
+			if (range) {
+				target.editor.replaceRange(wrapDelimiters(latex, pending.mode), range.from, range.to);
+				target.editor.setCursor(range.from);
+				return true;
+			}
+			// Never overwrite a range that could not be re-confirmed: the text
+			// there now is not the equation this panel was opened on.
+			new Notice("Could not find that equation in this note any more — inserting at the cursor instead.");
 		}
-		const textBeforeCursor = this.editor.getRange({ line: 0, ch: 0 }, this.editor.getCursor());
+
+		const textBeforeCursor = target.editor.getRange({ line: 0, ch: 0 }, target.editor.getCursor());
 		const insertText = isInsideMath(textBeforeCursor)
 			? stripDelimiters(latex)
 			: wrapDelimiters(latex, this.insertMode(event));
-		this.editor.replaceSelection(insertText);
+		target.editor.replaceSelection(insertText);
 		return true;
 	}
 
-	private finishInsert(): void {
-		if (this.deps.getSettings().closeOnInsert) this.close();
+	/**
+	 * Where the pending edit-in-place actually belongs in the live document.
+	 *
+	 * The positions captured when the panel opened describe the note as it was
+	 * then; two paragraphs typed above the equation since have moved it, and
+	 * replacing at the remembered range would silently delete whatever prose now
+	 * sits there. So the note is rescanned and the equation found again — and if
+	 * it cannot be found, or the note on screen is not the one it came from, the
+	 * answer is `null` rather than a guess.
+	 */
+	private resolveReplaceRange(
+		target: EditorTarget,
+		pending: PendingReplace,
+	): { from: EditorPosition; to: EditorPosition } | null {
+		if (pending.filePath !== undefined && pending.filePath !== target.filePath) return null;
+		const nearOffset = target.editor.posToOffset(pending.range.from);
+		const span = relocateMathSpan(target.editor.getValue(), pending.latex, nearOffset);
+		if (span === null) return null;
+		return { from: target.editor.offsetToPos(span.start), to: target.editor.offsetToPos(span.end) };
 	}
 
 	private onInsert(event: MouseEvent | KeyboardEvent | undefined): void {
@@ -659,7 +732,6 @@ export class LibraryModal extends Modal {
 		}
 		if (!this.insertIntoEditor(latex, event)) return;
 		this.deps.log({ action: "insert-at-cursor", latex });
-		this.finishInsert();
 	}
 
 	/**
@@ -675,23 +747,22 @@ export class LibraryModal extends Modal {
 			name: equation.name,
 			category: equation.category,
 		});
-		this.finishInsert();
 	}
 
 	/** Inserts a wikilink to the equation's note at the cursor. */
 	private onTileInsertLink(equation: Equation): void {
-		if (!this.editor) {
+		const target = this.deps.getEditor();
+		if (!target) {
 			new Notice("Open a markdown note first — there is nowhere to insert.");
 			return;
 		}
-		this.editor.replaceSelection(this.deps.linkFor(equation.id));
+		target.editor.replaceSelection(this.deps.linkFor(equation.id));
 		this.deps.log({
 			action: "insert-at-cursor",
 			latex: equation.latex,
 			name: equation.name,
 			category: equation.category,
 		});
-		this.finishInsert();
 	}
 
 	private async onCopyPng(): Promise<void> {
@@ -701,7 +772,7 @@ export class LibraryModal extends Modal {
 			return;
 		}
 		try {
-			await copyLatexAsPng(this.contentEl.ownerDocument, latex, "block");
+			await copyLatexAsPng(this.rootEl.ownerDocument, latex, "block");
 			new Notice("Copied the equation as a PNG.");
 		} catch (error) {
 			new Notice(`Could not copy the equation as a PNG: ${String(error)}`);
@@ -777,7 +848,6 @@ export class LibraryModal extends Modal {
 			name: added.name,
 			category: added.category,
 		});
-		this.finishInsert();
 	}
 
 	private async onUpdateEquation(): Promise<void> {
@@ -823,7 +893,9 @@ export class LibraryModal extends Modal {
 				.setIcon("file-text")
 				.onClick(() => void this.openEquationNote(equation.id)),
 		);
-		if (this.editor) {
+		// The insert entries are offered for the note that is open right now, not
+		// for whatever was open when the panel was.
+		if (this.deps.getEditor() !== null) {
 			menu.addItem((item) =>
 				item
 					.setTitle(equation.symbol ? "Insert with symbol" : "Insert")
@@ -873,9 +945,12 @@ export class LibraryModal extends Modal {
 		menu.showAtMouseEvent(event);
 	}
 
+	/**
+	 * The modal had to close itself to get out of the way of the note it opened;
+	 * the panel simply stays where it is, beside it.
+	 */
 	private async openEquationNote(id: string): Promise<void> {
-		if (await this.deps.openNote(id)) this.close();
-		else new Notice("That note no longer exists.");
+		if (!(await this.deps.openNote(id))) new Notice("That note no longer exists.");
 	}
 
 	private async duplicateEquation(equation: Equation): Promise<void> {
@@ -995,5 +1070,54 @@ export class LibraryModal extends Modal {
 				? `Deleted "${current}".`
 				: `Deleted "${current}" — ${moved} equation${moved === 1 ? "" : "s"} moved to ${UNCATEGORIZED}.`,
 		);
+	}
+}
+
+/**
+ * The workspace leaf the library lives in — a sidebar panel, or a popout
+ * window when the same view type is opened through `openPopoutLeaf`.
+ */
+export class EquationLibraryView extends ItemView {
+	private renderer: LibraryRenderer | null = null;
+	/** Set before `onOpen` when the view is opened on an equation. */
+	private prefill: GeneratorPrefill | undefined;
+
+	constructor(leaf: WorkspaceLeaf, private readonly deps: LibraryViewDeps) {
+		super(leaf);
+	}
+
+	getViewType(): string {
+		return LIBRARY_VIEW_TYPE;
+	}
+
+	getDisplayText(): string {
+		return "Equation Library";
+	}
+
+	getIcon(): string {
+		return "sigma";
+	}
+
+	async onOpen(): Promise<void> {
+		this.renderer = new LibraryRenderer(this.app, this.deps);
+		this.renderer.mount(this.contentEl);
+		this.renderer.loadPrefill(this.prefill);
+		this.prefill = undefined;
+	}
+
+	async onClose(): Promise<void> {
+		this.renderer?.unmount();
+		this.renderer = null;
+	}
+
+	/**
+	 * Loads an equation into the generator, whether or not the view has been
+	 * drawn yet: a leaf restored from the last session builds its UI later, and
+	 * an already-open panel is reused rather than replaced.
+	 */
+	setPrefill(prefill: GeneratorPrefill | undefined): void {
+		if (prefill === undefined) return;
+		if (this.renderer) this.renderer.loadPrefill(prefill);
+		else this.prefill = prefill;
 	}
 }

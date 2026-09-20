@@ -211,6 +211,36 @@ export function scanMathSpans(text: string): MathSpan[] {
 }
 
 /**
+ * Finds `latex` again in a document that may have moved underneath it.
+ *
+ * The library panel is not modal, so the note can be edited while an equation
+ * loaded from it is still open in the generator: the offsets captured when the
+ * panel opened may point at completely different text by the time "Replace in
+ * note" is clicked. Rather than trust them, the live document is rescanned and
+ * the span with the same (delimiter-stripped) LaTeX is used.
+ *
+ * `nearOffset` is where the equation used to be, and it only breaks ties: with
+ * two identical equations in one note the nearer one is the one that was
+ * pointed at. `null` means the equation is no longer in the document — it was
+ * deleted or edited beyond recognition — and the caller must not guess a range.
+ */
+export function relocateMathSpan(text: string, latex: string, nearOffset: number): MathSpan | null {
+	const wanted = stripDelimiters(latex);
+	if (wanted.length === 0) return null;
+	let best: MathSpan | null = null;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	for (const span of scanMathSpans(text)) {
+		if (span.latex !== wanted) continue;
+		const distance = Math.abs(span.start - nearOffset);
+		if (distance < bestDistance) {
+			best = span;
+			bestDistance = distance;
+		}
+	}
+	return best;
+}
+
+/**
  * The math span `offset` sits in, or `null`.
  *
  * Both edges count as inside, so a caret resting immediately before the

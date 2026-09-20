@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	findMathSpanAt,
 	isInsideMath,
+	relocateMathSpan,
 	resolveInsertMode,
 	scanMathSpans,
 	stripDelimiters,
@@ -174,6 +175,41 @@ describe("scanMathSpans", () => {
 	it("ignores an escaped dollar and an unterminated span", () => {
 		expect(scanMathSpans("\\$x\\$")).toEqual([]);
 		expect(scanMathSpans("$x^2 with no closer")).toEqual([]);
+	});
+});
+
+describe("relocateMathSpan", () => {
+	it("finds the equation again after text is inserted above it", () => {
+		const before = "intro\n\n$x^2$\n";
+		const span = findMathSpanAt(before, before.indexOf("$x^2$"));
+		const after = "intro\n\nadded paragraph\n\nanother one\n\n$x^2$\n";
+		expect(relocateMathSpan(after, "x^2", span?.start ?? 0)).toEqual({
+			start: after.indexOf("$x^2$"),
+			end: after.indexOf("$x^2$") + 5,
+			mode: "inline",
+			latex: "x^2",
+		});
+	});
+
+	it("returns null when the equation is gone", () => {
+		expect(relocateMathSpan("the equation was deleted\n", "x^2", 7)).toBeNull();
+		expect(relocateMathSpan("$y^3$", "x^2", 0)).toBeNull();
+	});
+
+	it("picks the nearest of two identical equations", () => {
+		const text = "$x^2$ and later $x^2$";
+		expect(relocateMathSpan(text, "x^2", 0)?.start).toBe(0);
+		expect(relocateMathSpan(text, "x^2", 19)?.start).toBe(16);
+	});
+
+	it("matches a block span whether or not the wanted latex carries delimiters", () => {
+		const text = "before\n$$a = b$$\n";
+		expect(relocateMathSpan(text, "a = b", 0)?.mode).toBe("block");
+		expect(relocateMathSpan(text, "$$a = b$$", 0)?.start).toBe(7);
+	});
+
+	it("refuses an empty search", () => {
+		expect(relocateMathSpan("$x^2$", "   ", 0)).toBeNull();
 	});
 });
 

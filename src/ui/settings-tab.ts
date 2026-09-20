@@ -36,15 +36,6 @@ export class EquationLibrarySettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Library").setHeading();
 
 		new Setting(containerEl)
-			.setName("Close after inserting")
-			.setDesc("Close the library popup once an equation has been inserted.")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.closeOnInsert)
-					.onChange((value) => void this.plugin.updateSettings({ closeOnInsert: value })),
-			);
-
-		new Setting(containerEl)
 			.setName("Insert format")
 			.setDesc("Which delimiters an unmodified insert uses. Holding shift always inserts a block equation.")
 			.addDropdown((dropdown) =>
