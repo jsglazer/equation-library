@@ -73,13 +73,17 @@
 }
 
 /*
- * Tiles are all the same size: a fixed aspect ratio with the formula scaled
- * down inside it, so one oversized equation never stretches the grid.
+ * Tiles size to their contents between a floor and a ceiling, so one oversized
+ * equation never stretches the grid and a one-line equation is not padded out
+ * to a fixed height. A fixed aspect ratio was doing the latter: in a docked
+ * panel the single column is wide, and 2:1 turned that width into a tall tile
+ * with the formula marooned in the middle of it.
  */
 .eqlib-tile {
 	display: flex;
 	flex-direction: column;
-	aspect-ratio: 2 / 1;
+	min-height: 4.5rem;
+	max-height: 9rem;
 	overflow: hidden;
 	padding: var(--size-4-1);
 	border: 1px solid var(--background-modifier-border);
