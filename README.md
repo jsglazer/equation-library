@@ -18,7 +18,7 @@ The panel is **not modal**. It stays open while you type, scroll, switch notes a
 
 Because the note can change while the panel is open, every insert asks where it is going at the moment you click, not at the moment the panel opened: it goes into the note you were last writing in, and the two insert buttons grey out and come back as notes are opened and closed. Nothing is ever written to a note you closed, or to one that is not on screen.
 
-**Top panel — the library.** Every equation note is rendered in its own fixed-size tile, as `symbol = equation` when the note has a symbol. Tiles render as they scroll into view, so a large library stays responsive.
+**Top panel — the library.** Every equation note is rendered in its own tile, sized to the equation it holds, as `symbol = equation` when the note has a symbol. Tiles render as they scroll into view, so a large library stays responsive.
 
 | Action | Result |
 | --- | --- |
@@ -28,9 +28,11 @@ Because the note can change while the panel is open, every insert asks where it 
 | Alt/Option + double-click | Inserts it with its symbol, `$E_p = …$` |
 | Right-click a tile | Open the note, insert with symbol, insert as a `[[link]]`, rename, move to another category, duplicate, or delete |
 
-Search, filter by category and by usage tag, and sort by name, newest or recently changed from the toolbar. Search reads names first, then the note field, the LaTeX, the symbol, usage tags and source, and finally the note's body and any other frontmatter, so "the one about damped oscillation" is findable even when the name says `x(t)`. The three buttons on the right create, rename and delete categories. The usage filter appears only when at least one note carries a usage tag.
+Search, filter by category and by usage tag, and sort by name, newest or recently changed from the toolbar. Search reads names first, then the note field, the LaTeX, the symbol, usage tags and source, and finally the note's body and any other frontmatter, so "the one about damped oscillation" is findable even when the name says `x(t)`. The search box carries its own **x** while there is anything to clear, and Escape clears it too. The four buttons on the right refresh the library and create, rename and delete categories. The usage filter appears only when at least one note carries a usage tag.
 
-**Bottom panel — the generator.** The plain LaTeX source box is the only editable equation field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. Next to the preview, a **Copy PNG** button rasterizes the current equation and puts it on the clipboard as an image.
+**The grid keeps itself current.** Add, edit, rename or delete an equation note — in the panel, by hand in the editor, or through sync — and the tiles redraw for it; there is nothing to close and reopen. A panel sitting in a collapsed sidebar or a background tab waits rather than redrawing where nobody is looking, and catches up the moment it comes back into view. The **Refresh** button reloads from the notes on demand and reports how many it found.
+
+**Bottom panel — the generator.** The plain LaTeX source box is the only editable equation field: structure appears as you type — `\frac` immediately becomes a fraction with two slots, no waiting for the closing brace — but that happens above it, in a **preview** field that shows the same live rendering without accepting typing or pasting directly. The preview renders `symbol = equation` when a symbol is filled in, so it shows exactly what the tile will look like once saved. Next to it, a **Copy PNG** button rasterizes what the preview shows — symbol and all — and puts it on the clipboard as an image.
 
 Alongside the name and category sit an optional **Symbol** — the left-hand side, as LaTeX, so tiles read `\bar{x} = …` — and an optional **Note**, free text for what an equation is for or which convention it follows. Both are saved by **Add to Library** and **Update**, come back when you click the tile again, and travel with the equation through export and import.
 
@@ -41,8 +43,9 @@ Alongside the name and category sit an optional **Symbol** — the left-hand sid
 | Add & Insert | Both, in that order |
 | Update *(after clicking a tile)* | Saves the generator's current name, symbol, LaTeX, category and note back to that same note, in place |
 | Open note *(after clicking a tile)* | Opens that equation's note beside the panel, which stays open |
+| New | Clears the generator — LaTeX, name, symbol, note and any pending replace — for a fresh equation, keeping the category you were filing into |
 
-Adding an equation whose LaTeX is already in the library does not make a copy: the existing note is loaded for editing instead, so a second click on **Add to Library** is harmless, and **Add & Insert** still inserts it.
+Adding an equation whose LaTeX is already in the library does not make a copy: the existing note is loaded for editing instead, so a second click on **Add to Library** is harmless, and **Add & Insert** still inserts it. **Add to Library** in fact steps out of the way entirely while the generator holds a saved equation exactly as it was loaded — there is nothing it could add — and reappears the moment you change any field, which is the point at which adding means a second equation alongside the first rather than the **Update** that would overwrite it.
 
 **Cmd/Ctrl + Return** fires the primary button — *Insert at cursor*, or *Replace in note* when the panel was opened on an equation in the note — and **Shift + Cmd/Ctrl + Return** fires *Add & Insert*. Both work from anywhere in the panel: the LaTeX box, the name, the note.
 
@@ -118,7 +121,7 @@ Every key name is a setting, so an existing collection of notes can be adopted a
 
 **Categories** are whatever the notes' `Category` values say, plus any you create in the panel before assigning an equation to them (those are remembered in the plugin's settings). Renaming a category rewrites the field in every member note; deleting one blanks it, moving the members to `Uncategorized`, which cannot itself be renamed or deleted. Equations are never deleted as a side effect.
 
-Because the library is ordinary notes, **sync is Obsidian's problem, not the plugin's** — Obsidian Sync, iCloud, Dropbox and git all carry it. Notes edited by hand or changed by sync are picked up the next time the panel opens; the autocomplete re-reads the folder whenever anything under it changes.
+Because the library is ordinary notes, **sync is Obsidian's problem, not the plugin's** — Obsidian Sync, iCloud, Dropbox and git all carry it. Notes edited by hand or changed by sync are picked up as they land: the autocomplete re-reads the folder whenever anything under it changes, and an open panel redraws its grid for the same change.
 
 ### Upgrading from 1.0.x
 
