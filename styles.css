@@ -43,9 +43,50 @@
 	gap: var(--size-4-2);
 }
 
-.eqlib-search {
+/* The search field and its own x, which sits over the right-hand end of it. */
+.eqlib-search-wrap {
+	position: relative;
+	display: flex;
 	flex: 1 1 12rem;
 	min-width: 8rem;
+}
+
+.eqlib-search {
+	flex: 1 1 auto;
+	width: 100%;
+	padding-right: var(--size-4-6);
+}
+
+/* The native one is styled by the browser, not the theme, and is absent on mobile. */
+.eqlib-search::-webkit-search-cancel-button {
+	display: none;
+}
+
+.eqlib-search-clear {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	right: var(--size-4-1);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 var(--size-4-1);
+	border: none;
+	border-radius: var(--radius-s);
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.eqlib-search-clear:hover {
+	color: var(--text-normal);
+	background-color: transparent;
+}
+
+.eqlib-search-clear .svg-icon {
+	width: var(--icon-s);
+	height: var(--icon-s);
 }
 
 .eqlib-toolbar-actions {

@@ -58,6 +58,15 @@ export default class EquationLibraryPlugin extends Plugin {
 	/** The note the panel inserts into, resolved fresh on every insert. */
 	private editors!: EditorTracker;
 
+	/**
+	 * Panels that want to hear about a change under the library folder.
+	 *
+	 * The note store already drops its cache on such a change, but a panel that
+	 * is on screen has a rendered copy of the catalog of its own; without this it
+	 * keeps showing the library as it was when the panel opened.
+	 */
+	private readonly libraryListeners = new Set<() => void>();
+
 	async onload(): Promise<void> {
 		const raw: unknown = await this.loadData();
 		this.settings = normalizeSettings(raw);
@@ -120,6 +129,7 @@ export default class EquationLibraryPlugin extends Plugin {
 		const touched = (file: TAbstractFile, oldPath?: string) => {
 			if (this.noteStore.isLibraryPath(file.path) || (oldPath !== undefined && this.noteStore.isLibraryPath(oldPath))) {
 				this.noteStore.invalidate();
+				for (const listener of this.libraryListeners) listener();
 			}
 		};
 		this.registerEvent(this.app.metadataCache.on("changed", (file) => touched(file)));
@@ -250,6 +260,10 @@ export default class EquationLibraryPlugin extends Plugin {
 			isMobile: Platform.isMobile,
 			getEditor: () => this.editors.resolve(),
 			onEditorChange: (listener) => this.editors.subscribe(listener),
+			onLibraryChange: (listener) => {
+				this.libraryListeners.add(listener);
+				return () => this.libraryListeners.delete(listener);
+			},
 		};
 	}
 

@@ -17,7 +17,17 @@
  * file reads the catalog, draws it, and applies the results of those pure
  * functions.
  */
-import { App, ButtonComponent, EditorPosition, ItemView, Menu, Notice, Platform, WorkspaceLeaf } from "obsidian";
+import {
+	App,
+	ButtonComponent,
+	EditorPosition,
+	ItemView,
+	Menu,
+	Notice,
+	Platform,
+	WorkspaceLeaf,
+	setIcon,
+} from "obsidian";
 import { Catalog, Equation, LogAction, UNCATEGORIZED } from "../core/types";
 import { EquationLibrarySettings } from "../core/settings";
 import {
@@ -101,6 +111,11 @@ export interface LibraryViewDeps {
 	readonly getEditor: () => EditorTarget | null;
 	/** Fires when that target changes, so the insert buttons can follow it. */
 	readonly onEditorChange: (listener: () => void) => () => void;
+	/**
+	 * Fires when a note under the library folder is written, renamed or deleted
+	 * — by this panel, by hand, or by sync. Returns an unsubscribe function.
+	 */
+	readonly onLibraryChange: (listener: () => void) => () => void;
 }
 
 const ALL_CATEGORIES = "__all__";
@@ -120,6 +135,21 @@ function withSymbol(equation: Equation): string {
 	return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
 }
 
+/** The same rule as `withSymbol`, for the loose fields in the generator. */
+function joinSymbol(symbol: string, latex: string): string {
+	const trimmed = symbol.trim();
+	return trimmed.length > 0 && latex.length > 0 ? `${trimmed} = ${latex}` : trimmed.length > 0 ? trimmed : latex;
+}
+
+/** The generator's fields as saved, used to tell an edited equation from an untouched one. */
+interface GeneratorSnapshot {
+	readonly name: string;
+	readonly symbol: string;
+	readonly note: string;
+	readonly latex: string;
+	readonly category: string;
+}
+
 export class LibraryRenderer {
 	private catalog: Catalog = { schemaVersion: 1, categories: [UNCATEGORIZED], equations: [] };
 	private searchText = "";
@@ -137,8 +167,17 @@ export class LibraryRenderer {
 	private rootEl!: HTMLElement;
 	private gridEl!: HTMLElement;
 	private scrollEl!: HTMLElement;
+	private searchEl!: HTMLInputElement;
+	private searchClearEl!: HTMLElement;
 	private observer: IntersectionObserver | null = null;
 	private unsubscribeEditor: (() => void) | null = null;
+	private unsubscribeLibrary: (() => void) | null = null;
+	/** A note under the library folder changed and the grid has not caught up. */
+	private stale = false;
+	/** False until the first catalog load has been taken in. */
+	private loaded = false;
+	/** The pending debounced reload, so a burst of vault events reloads once. */
+	private refreshTimer: number | null = null;
 	private readonly pending = new Map<HTMLElement, Equation>();
 	/** Rendered markup, cached for the panel's lifetime and keyed by content. */
 	private readonly markupCache = new Map<string, string>();
@@ -153,10 +192,13 @@ export class LibraryRenderer {
 	private generatorCategory = UNCATEGORIZED;
 	private latex = "";
 	private insertButtons: ButtonComponent[] = [];
+	private addButton: ButtonComponent | null = null;
 	private updateButton: ButtonComponent | null = null;
 	private openNoteButton: ButtonComponent | null = null;
 	/** The equation the generator is editing, or null when building a fresh one. */
 	private editingEquationId: string | null = null;
+	/** That equation's fields as loaded; null when nothing is loaded from the library. */
+	private editingBaseline: GeneratorSnapshot | null = null;
 	/** The pending edit-in-place, or null when an insert goes at the cursor. */
 	private replace: PendingReplace | null = null;
 
@@ -195,9 +237,60 @@ export class LibraryRenderer {
 		});
 
 		this.unsubscribeEditor = this.deps.onEditorChange(() => this.refreshEditorState());
+		this.unsubscribeLibrary = this.deps.onLibraryChange(() => this.onLibraryChanged());
 		this.refreshEditorState();
 
 		void this.refreshCatalog();
+	}
+
+	// -------------------------------------------------------------- refresh
+
+	/**
+	 * A note under the library folder changed on disk.
+	 *
+	 * The grid is redrawn straight away when the panel is on screen, and marked
+	 * stale when it is not — a panel in a collapsed sidebar or a background tab
+	 * catches up the moment it is shown again, rather than re-rendering tiles
+	 * nobody is looking at. Vault events arrive in bursts (one save can touch
+	 * several notes), so the reload is debounced.
+	 */
+	private onLibraryChanged(): void {
+		this.stale = true;
+		if (this.isVisible()) this.scheduleRefresh();
+	}
+
+	/** Called by the host view when its leaf becomes visible again. */
+	viewShown(): void {
+		if (this.stale) this.scheduleRefresh();
+	}
+
+	private isVisible(): boolean {
+		return this.rootEl?.isShown?.() ?? true;
+	}
+
+	private scheduleRefresh(): void {
+		const win = this.rootEl?.win as (Window & typeof globalThis) | undefined;
+		if (!win) return;
+		if (this.refreshTimer !== null) win.clearTimeout(this.refreshTimer);
+		this.refreshTimer = win.setTimeout(() => {
+			this.refreshTimer = null;
+			void this.refreshCatalog();
+		}, 300);
+	}
+
+	/** The Refresh button: reload from the notes now, stale or not. */
+	private async reloadNow(): Promise<void> {
+		const win = this.rootEl?.win as (Window & typeof globalThis) | undefined;
+		if (this.refreshTimer !== null && win) {
+			win.clearTimeout(this.refreshTimer);
+			this.refreshTimer = null;
+		}
+		await this.refreshCatalog();
+		new Notice(
+			this.catalog.equations.length === 1
+				? "Reloaded the library — 1 equation."
+				: `Reloaded the library — ${this.catalog.equations.length} equations.`,
+		);
 	}
 
 	/**
@@ -230,10 +323,16 @@ export class LibraryRenderer {
 		this.observer = null;
 		this.unsubscribeEditor?.();
 		this.unsubscribeEditor = null;
+		this.unsubscribeLibrary?.();
+		this.unsubscribeLibrary = null;
+		const win = this.rootEl?.win as (Window & typeof globalThis) | undefined;
+		if (this.refreshTimer !== null && win) win.clearTimeout(this.refreshTimer);
+		this.refreshTimer = null;
 		this.pending.clear();
 		this.mathField?.destroy();
 		this.mathField = null;
 		this.insertButtons = [];
+		this.addButton = null;
 		this.updateButton = null;
 		this.openNoteButton = null;
 		hideVirtualKeyboard();
@@ -245,12 +344,33 @@ export class LibraryRenderer {
 	private buildToolbar(parent: HTMLElement): void {
 		const bar = parent.createDiv({ cls: "eqlib-toolbar" });
 
-		const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
+		// The clear affordance is drawn rather than left to the browser: Obsidian
+		// hides the native `type="search"` cancel button, and on mobile there is
+		// none to hide.
+		const searchWrap = bar.createDiv({ cls: "eqlib-search-wrap" });
+		const search = searchWrap.createEl("input", { cls: "eqlib-search", type: "search" });
 		search.placeholder = "Search equations";
+		this.searchEl = search;
 		search.addEventListener("input", () => {
 			this.searchText = search.value;
+			this.syncSearchClear();
 			this.renderGrid();
 		});
+		search.addEventListener("keydown", (event) => {
+			if (event.key === "Escape" && search.value.length > 0) {
+				event.preventDefault();
+				this.clearSearch();
+			}
+		});
+
+		const clear = searchWrap.createEl("button", {
+			cls: "eqlib-search-clear",
+			attr: { type: "button", "aria-label": "Clear the search" },
+		});
+		setIcon(clear, "x");
+		clear.addEventListener("click", () => this.clearSearch());
+		this.searchClearEl = clear;
+		this.syncSearchClear();
 
 		const categorySelect = bar.createEl("select", { cls: "dropdown eqlib-category-filter" });
 		this.fillCategoryFilter(categorySelect);
@@ -285,6 +405,10 @@ export class LibraryRenderer {
 
 		const actions = bar.createDiv({ cls: "eqlib-toolbar-actions" });
 		new ButtonComponent(actions)
+			.setIcon("refresh-cw")
+			.setTooltip("Reload the library from the notes")
+			.onClick(() => void this.reloadNow());
+		new ButtonComponent(actions)
 			.setIcon("folder-plus")
 			.setTooltip("New category")
 			.onClick(() => this.promptNewCategory());
@@ -296,6 +420,19 @@ export class LibraryRenderer {
 			.setIcon("trash-2")
 			.setTooltip("Delete the selected category (its equations move to Uncategorized)")
 			.onClick(() => this.confirmDeleteCategory());
+	}
+
+	/** The x only exists while there is something to clear. */
+	private syncSearchClear(): void {
+		this.searchClearEl?.toggle(this.searchEl.value.length > 0);
+	}
+
+	private clearSearch(): void {
+		this.searchEl.value = "";
+		this.searchText = "";
+		this.syncSearchClear();
+		this.renderGrid();
+		this.searchEl.focus();
 	}
 
 	private fillCategoryFilter(select: HTMLSelectElement): void {
@@ -346,19 +483,29 @@ export class LibraryRenderer {
 		this.nameInput = meta.createEl("input", { cls: "eqlib-name", type: "text" });
 		this.nameInput.placeholder = "Equation name";
 
+		this.nameInput.addEventListener("input", () => this.refreshAddButton());
+
 		this.symbolInput = meta.createEl("input", { cls: "eqlib-symbol", type: "text" });
 		this.symbolInput.placeholder = "Symbol (LaTeX, optional)";
 		this.symbolInput.spellcheck = false;
+		// The preview renders `symbol = equation`, the same shape the tiles use,
+		// so what is previewed is what the library will show.
+		this.symbolInput.addEventListener("input", () => {
+			this.syncPreview();
+			this.refreshAddButton();
+		});
 
 		const categorySelect = meta.createEl("select", { cls: "dropdown eqlib-generator-category" });
 		categorySelect.addEventListener("change", () => {
 			this.generatorCategory = categorySelect.value;
+			this.refreshAddButton();
 		});
 		this.generatorCategoryEl = categorySelect;
 
 		this.noteInput = panel.createEl("textarea", { cls: "eqlib-note" });
 		this.noteInput.placeholder = "Note (optional) — what this is for, where it came from";
 		this.noteInput.rows = 2;
+		this.noteInput.addEventListener("input", () => this.refreshAddButton());
 
 		const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
 		fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
@@ -383,7 +530,8 @@ export class LibraryRenderer {
 		this.latexInput.spellcheck = false;
 		this.latexInput.addEventListener("input", () => {
 			this.latex = stripDelimiters(this.latexInput.value);
-			this.mathField?.setLatex(this.latex);
+			this.syncPreview();
+			this.refreshAddButton();
 		});
 
 		const buttons = panel.createDiv({ cls: "eqlib-buttons" });
@@ -394,9 +542,10 @@ export class LibraryRenderer {
 			.setTooltip(`Insert the equation into the note (${this.modifierLabel()}+Return).`)
 			.setCta()
 			.onClick((event) => this.onInsert(event));
-		const addButton = new ButtonComponent(buttons)
+		this.addButton = new ButtonComponent(buttons)
 			.setButtonText("Add to Library")
 			.onClick(() => void this.onAddToLibrary());
+		const addButton = this.addButton;
 		const addInsertButton = new ButtonComponent(buttons)
 			.setButtonText("Add & Insert")
 			.setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`)
@@ -418,7 +567,79 @@ export class LibraryRenderer {
 			});
 		this.openNoteButton.buttonEl.hide();
 
+		new ButtonComponent(buttons)
+			.setButtonText("New")
+			.setTooltip("Clear the generator and start a fresh equation.")
+			.onClick(() => this.clearGenerator());
+
 		addButton.setTooltip("Save this equation to the library.");
+		this.refreshAddButton();
+	}
+
+	/** What the preview renders: the symbol and the equation, as the tiles show them. */
+	private syncPreview(): void {
+		this.mathField?.setLatex(joinSymbol(this.symbolInput.value, this.latex));
+	}
+
+	/** The generator's fields right now, in the same shape as a saved equation. */
+	private snapshot(): GeneratorSnapshot {
+		return {
+			name: this.nameInput.value.trim(),
+			symbol: this.symbolInput.value.trim(),
+			note: this.noteInput.value,
+			latex: this.currentLatex(),
+			category: this.generatorCategory,
+		};
+	}
+
+	/**
+	 * "Add to Library" is hidden while the generator holds a library equation
+	 * exactly as it was loaded: adding it again cannot do anything but report
+	 * that it is already there. Change any field and it comes back — that is
+	 * the point at which adding means something (a new equation alongside the
+	 * old one, where Update would overwrite it).
+	 */
+	private refreshAddButton(): void {
+		const button = this.addButton;
+		if (!button) return;
+		const baseline = this.editingBaseline;
+		const unchanged =
+			this.editingEquationId !== null && baseline !== null && this.matchesBaseline(baseline, this.snapshot());
+		button.buttonEl.toggle(!unchanged);
+	}
+
+	private matchesBaseline(baseline: GeneratorSnapshot, current: GeneratorSnapshot): boolean {
+		return (
+			baseline.name === current.name &&
+			baseline.symbol === current.symbol &&
+			baseline.note.trim() === current.note.trim() &&
+			baseline.latex === current.latex &&
+			baseline.category === current.category
+		);
+	}
+
+	/**
+	 * Empties the generator for a new equation: the fields, the identity of the
+	 * equation being edited, and any pending edit-in-place — that range belongs
+	 * to the equation just cleared. The category is left alone, since the next
+	 * equation is usually filed with the last one.
+	 */
+	private clearGenerator(): void {
+		this.latex = "";
+		this.latexInput.value = "";
+		this.nameInput.value = "";
+		this.symbolInput.value = "";
+		this.noteInput.value = "";
+		this.editingEquationId = null;
+		this.editingBaseline = null;
+		this.replace = null;
+		this.syncPreview();
+		this.updateButton?.buttonEl.hide();
+		this.openNoteButton?.buttonEl.hide();
+		this.setPrimaryButton();
+		this.refreshAddButton();
+		this.refreshEditorState();
+		this.latexInput.focus();
 	}
 
 	/** The modifier the platform actually uses, for tooltips. */
@@ -464,13 +685,14 @@ export class LibraryRenderer {
 		if (!prefill || prefill.latex.length === 0) return;
 		this.latex = stripDelimiters(prefill.latex);
 		this.latexInput.value = this.latex;
-		this.mathField?.setLatex(this.latex);
 		// A second prefill is a different equation: the fields and the identity
 		// of the one before it must not linger.
 		this.editingEquationId = null;
+		this.editingBaseline = null;
 		this.nameInput.value = "";
 		this.symbolInput.value = "";
 		this.noteInput.value = "";
+		this.syncPreview();
 		this.updateButton?.buttonEl.hide();
 		this.openNoteButton?.buttonEl.hide();
 		this.replace = prefill.range
@@ -478,6 +700,7 @@ export class LibraryRenderer {
 			: null;
 		this.setPrimaryButton();
 		this.adoptPrefilledEquation();
+		this.refreshAddButton();
 		this.refreshEditorState();
 	}
 
@@ -495,9 +718,17 @@ export class LibraryRenderer {
 
 	private async refreshCatalog(): Promise<void> {
 		this.catalog = await this.deps.loadCatalog();
+		this.stale = false;
 		this.syncCategorySelectors();
 		this.fillUsageFilter();
-		this.adoptPrefilledEquation();
+		// Only the first load adopts: a reload triggered by a note changing on
+		// disk must not reach into a generator the user is halfway through
+		// filling in and overwrite the name they just typed.
+		if (!this.loaded) {
+			this.loaded = true;
+			this.adoptPrefilledEquation();
+		}
+		this.refreshAddButton();
 		this.renderGrid();
 	}
 
@@ -520,8 +751,17 @@ export class LibraryRenderer {
 		this.generatorCategory = equation.category;
 		this.generatorCategoryEl.value = equation.category;
 		this.editingEquationId = equation.id;
+		this.editingBaseline = {
+			name: equation.name,
+			symbol: equation.symbol?.trim() ?? "",
+			note: equation.note ?? "",
+			latex: equation.latex,
+			category: equation.category,
+		};
+		this.syncPreview();
 		this.updateButton?.buttonEl.show();
 		this.openNoteButton?.buttonEl.show();
+		this.refreshAddButton();
 	}
 
 	private syncCategorySelectors(): void {
@@ -648,7 +888,6 @@ export class LibraryRenderer {
 	private loadIntoGenerator(equation: Equation): void {
 		this.latex = equation.latex;
 		this.latexInput.value = equation.latex;
-		this.mathField?.setLatex(equation.latex);
 		this.adoptEquation(equation);
 		this.replace = null;
 		this.setPrimaryButton();
@@ -765,6 +1004,7 @@ export class LibraryRenderer {
 		});
 	}
 
+	/** Copies what the preview shows, symbol and all. */
 	private async onCopyPng(): Promise<void> {
 		const latex = this.currentLatex();
 		if (latex.length === 0) {
@@ -772,7 +1012,7 @@ export class LibraryRenderer {
 			return;
 		}
 		try {
-			await copyLatexAsPng(this.rootEl.ownerDocument, latex, "block");
+			await copyLatexAsPng(this.rootEl.ownerDocument, joinSymbol(this.symbolInput.value, latex), "block");
 			new Notice("Copied the equation as a PNG.");
 		} catch (error) {
 			new Notice(`Could not copy the equation as a PNG: ${String(error)}`);
@@ -878,8 +1118,10 @@ export class LibraryRenderer {
 		new Notice(`Updated "${name}".`);
 		this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
 		this.editingEquationId = null;
+		this.editingBaseline = null;
 		this.updateButton?.buttonEl.hide();
 		this.openNoteButton?.buttonEl.hide();
+		this.refreshAddButton();
 	}
 
 	// ------------------------------------------------------------ catalogue
@@ -1098,11 +1340,30 @@ export class EquationLibraryView extends ItemView {
 		return "sigma";
 	}
 
+	/** Whether the leaf was on screen last time the workspace changed shape. */
+	private wasShown = false;
+
 	async onOpen(): Promise<void> {
 		this.renderer = new LibraryRenderer(this.app, this.deps);
 		this.renderer.mount(this.contentEl);
 		this.renderer.loadPrefill(this.prefill);
 		this.prefill = undefined;
+		this.wasShown = this.containerEl.isShown();
+
+		// A panel in a collapsed sidebar or a background tab defers the reloads
+		// it was told about; coming back into view is when it catches up. Both
+		// events are needed: expanding the sidebar is a layout change, switching
+		// between stacked tabs is an active-leaf change.
+		const check = () => this.checkShown();
+		this.registerEvent(this.app.workspace.on("layout-change", check));
+		this.registerEvent(this.app.workspace.on("active-leaf-change", check));
+	}
+
+	private checkShown(): void {
+		const shown = this.containerEl.isShown();
+		const appeared = shown && !this.wasShown;
+		this.wasShown = shown;
+		if (appeared) this.renderer?.viewShown();
 	}
 
 	async onClose(): Promise<void> {

@@ -17389,6 +17389,10 @@ var ALL_USAGES = "__all__";
 function withSymbol(equation) {
   return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
 }
+function joinSymbol(symbol, latex) {
+  const trimmed = symbol.trim();
+  return trimmed.length > 0 && latex.length > 0 ? `${trimmed} = ${latex}` : trimmed.length > 0 ? trimmed : latex;
+}
 var LibraryRenderer = class {
   constructor(app, deps) {
     this.app = app;
@@ -17405,6 +17409,13 @@ var LibraryRenderer = class {
     this.busy = false;
     this.observer = null;
     this.unsubscribeEditor = null;
+    this.unsubscribeLibrary = null;
+    /** A note under the library folder changed and the grid has not caught up. */
+    this.stale = false;
+    /** False until the first catalog load has been taken in. */
+    this.loaded = false;
+    /** The pending debounced reload, so a burst of vault events reloads once. */
+    this.refreshTimer = null;
     this.pending = /* @__PURE__ */ new Map();
     /** Rendered markup, cached for the panel's lifetime and keyed by content. */
     this.markupCache = /* @__PURE__ */ new Map();
@@ -17412,10 +17423,13 @@ var LibraryRenderer = class {
     this.generatorCategory = UNCATEGORIZED;
     this.latex = "";
     this.insertButtons = [];
+    this.addButton = null;
     this.updateButton = null;
     this.openNoteButton = null;
     /** The equation the generator is editing, or null when building a fresh one. */
     this.editingEquationId = null;
+    /** That equation's fields as loaded; null when nothing is loaded from the library. */
+    this.editingBaseline = null;
     /** The pending edit-in-place, or null when an insert goes at the cursor. */
     this.replace = null;
     const settings = deps.getSettings();
@@ -17448,8 +17462,54 @@ var LibraryRenderer = class {
       rootMargin: "200px"
     });
     this.unsubscribeEditor = this.deps.onEditorChange(() => this.refreshEditorState());
+    this.unsubscribeLibrary = this.deps.onLibraryChange(() => this.onLibraryChanged());
     this.refreshEditorState();
     void this.refreshCatalog();
+  }
+  // -------------------------------------------------------------- refresh
+  /**
+   * A note under the library folder changed on disk.
+   *
+   * The grid is redrawn straight away when the panel is on screen, and marked
+   * stale when it is not — a panel in a collapsed sidebar or a background tab
+   * catches up the moment it is shown again, rather than re-rendering tiles
+   * nobody is looking at. Vault events arrive in bursts (one save can touch
+   * several notes), so the reload is debounced.
+   */
+  onLibraryChanged() {
+    this.stale = true;
+    if (this.isVisible()) this.scheduleRefresh();
+  }
+  /** Called by the host view when its leaf becomes visible again. */
+  viewShown() {
+    if (this.stale) this.scheduleRefresh();
+  }
+  isVisible() {
+    var _a2, _b2, _c2;
+    return (_c2 = (_b2 = (_a2 = this.rootEl) == null ? void 0 : _a2.isShown) == null ? void 0 : _b2.call(_a2)) != null ? _c2 : true;
+  }
+  scheduleRefresh() {
+    var _a2;
+    const win = (_a2 = this.rootEl) == null ? void 0 : _a2.win;
+    if (!win) return;
+    if (this.refreshTimer !== null) win.clearTimeout(this.refreshTimer);
+    this.refreshTimer = win.setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshCatalog();
+    }, 300);
+  }
+  /** The Refresh button: reload from the notes now, stale or not. */
+  async reloadNow() {
+    var _a2;
+    const win = (_a2 = this.rootEl) == null ? void 0 : _a2.win;
+    if (this.refreshTimer !== null && win) {
+      win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    await this.refreshCatalog();
+    new import_obsidian5.Notice(
+      this.catalog.equations.length === 1 ? "Reloaded the library \u2014 1 equation." : `Reloaded the library \u2014 ${this.catalog.equations.length} equations.`
+    );
   }
   /**
    * Cmd/Ctrl+Return runs the primary action — Insert at cursor, or Replace in
@@ -17474,29 +17534,52 @@ var LibraryRenderer = class {
     });
   }
   unmount() {
-    var _a2, _b2, _c2, _d2;
+    var _a2, _b2, _c2, _d2, _e2, _f2;
     (_a2 = this.observer) == null ? void 0 : _a2.disconnect();
     this.observer = null;
     (_b2 = this.unsubscribeEditor) == null ? void 0 : _b2.call(this);
     this.unsubscribeEditor = null;
+    (_c2 = this.unsubscribeLibrary) == null ? void 0 : _c2.call(this);
+    this.unsubscribeLibrary = null;
+    const win = (_d2 = this.rootEl) == null ? void 0 : _d2.win;
+    if (this.refreshTimer !== null && win) win.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
     this.pending.clear();
-    (_c2 = this.mathField) == null ? void 0 : _c2.destroy();
+    (_e2 = this.mathField) == null ? void 0 : _e2.destroy();
     this.mathField = null;
     this.insertButtons = [];
+    this.addButton = null;
     this.updateButton = null;
     this.openNoteButton = null;
     hideVirtualKeyboard();
-    (_d2 = this.rootEl) == null ? void 0 : _d2.empty();
+    (_f2 = this.rootEl) == null ? void 0 : _f2.empty();
   }
   // ---------------------------------------------------------------- chrome
   buildToolbar(parent) {
     const bar = parent.createDiv({ cls: "eqlib-toolbar" });
-    const search = bar.createEl("input", { cls: "eqlib-search", type: "search" });
+    const searchWrap = bar.createDiv({ cls: "eqlib-search-wrap" });
+    const search = searchWrap.createEl("input", { cls: "eqlib-search", type: "search" });
     search.placeholder = "Search equations";
+    this.searchEl = search;
     search.addEventListener("input", () => {
       this.searchText = search.value;
+      this.syncSearchClear();
       this.renderGrid();
     });
+    search.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && search.value.length > 0) {
+        event.preventDefault();
+        this.clearSearch();
+      }
+    });
+    const clear = searchWrap.createEl("button", {
+      cls: "eqlib-search-clear",
+      attr: { type: "button", "aria-label": "Clear the search" }
+    });
+    (0, import_obsidian5.setIcon)(clear, "x");
+    clear.addEventListener("click", () => this.clearSearch());
+    this.searchClearEl = clear;
+    this.syncSearchClear();
     const categorySelect = bar.createEl("select", { cls: "dropdown eqlib-category-filter" });
     this.fillCategoryFilter(categorySelect);
     categorySelect.addEventListener("change", () => {
@@ -17526,9 +17609,22 @@ var LibraryRenderer = class {
       this.renderGrid();
     });
     const actions = bar.createDiv({ cls: "eqlib-toolbar-actions" });
+    new import_obsidian5.ButtonComponent(actions).setIcon("refresh-cw").setTooltip("Reload the library from the notes").onClick(() => void this.reloadNow());
     new import_obsidian5.ButtonComponent(actions).setIcon("folder-plus").setTooltip("New category").onClick(() => this.promptNewCategory());
     new import_obsidian5.ButtonComponent(actions).setIcon("pencil").setTooltip("Rename the selected category").onClick(() => this.promptRenameCategory());
     new import_obsidian5.ButtonComponent(actions).setIcon("trash-2").setTooltip("Delete the selected category (its equations move to Uncategorized)").onClick(() => this.confirmDeleteCategory());
+  }
+  /** The x only exists while there is something to clear. */
+  syncSearchClear() {
+    var _a2;
+    (_a2 = this.searchClearEl) == null ? void 0 : _a2.toggle(this.searchEl.value.length > 0);
+  }
+  clearSearch() {
+    this.searchEl.value = "";
+    this.searchText = "";
+    this.syncSearchClear();
+    this.renderGrid();
+    this.searchEl.focus();
   }
   fillCategoryFilter(select) {
     var _a2, _b2;
@@ -17575,17 +17671,24 @@ var LibraryRenderer = class {
     const meta = panel.createDiv({ cls: "eqlib-generator-meta" });
     this.nameInput = meta.createEl("input", { cls: "eqlib-name", type: "text" });
     this.nameInput.placeholder = "Equation name";
+    this.nameInput.addEventListener("input", () => this.refreshAddButton());
     this.symbolInput = meta.createEl("input", { cls: "eqlib-symbol", type: "text" });
     this.symbolInput.placeholder = "Symbol (LaTeX, optional)";
     this.symbolInput.spellcheck = false;
+    this.symbolInput.addEventListener("input", () => {
+      this.syncPreview();
+      this.refreshAddButton();
+    });
     const categorySelect = meta.createEl("select", { cls: "dropdown eqlib-generator-category" });
     categorySelect.addEventListener("change", () => {
       this.generatorCategory = categorySelect.value;
+      this.refreshAddButton();
     });
     this.generatorCategoryEl = categorySelect;
     this.noteInput = panel.createEl("textarea", { cls: "eqlib-note" });
     this.noteInput.placeholder = "Note (optional) \u2014 what this is for, where it came from";
     this.noteInput.rows = 2;
+    this.noteInput.addEventListener("input", () => this.refreshAddButton());
     const fieldHeader = panel.createDiv({ cls: "eqlib-mathfield-header" });
     fieldHeader.createSpan({ cls: "eqlib-mathfield-label", text: "Preview" });
     new import_obsidian5.ButtonComponent(fieldHeader).setIcon("image-down").setTooltip("Copy the rendered equation as a PNG").onClick(() => void this.onCopyPng());
@@ -17603,14 +17706,15 @@ var LibraryRenderer = class {
     this.latexInput.placeholder = "LaTeX source \u2014 $ signs optional";
     this.latexInput.spellcheck = false;
     this.latexInput.addEventListener("input", () => {
-      var _a2;
       this.latex = stripDelimiters(this.latexInput.value);
-      (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(this.latex);
+      this.syncPreview();
+      this.refreshAddButton();
     });
     const buttons = panel.createDiv({ cls: "eqlib-buttons" });
     this.insertButtons = [];
     const insertButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Insert at cursor").setTooltip(`Insert the equation into the note (${this.modifierLabel()}+Return).`).setCta().onClick((event) => this.onInsert(event));
-    const addButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Add to Library").onClick(() => void this.onAddToLibrary());
+    this.addButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Add to Library").onClick(() => void this.onAddToLibrary());
+    const addButton = this.addButton;
     const addInsertButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Add & Insert").setTooltip(`Save it and insert it (Shift+${this.modifierLabel()}+Return).`).onClick((event) => void this.onAddAndInsert(event));
     this.insertButtons = [insertButton, addInsertButton];
     this.updateButton = new import_obsidian5.ButtonComponent(buttons).setButtonText("Update").setTooltip("Save these changes back to the equation loaded from the library.").onClick(() => void this.onUpdateEquation());
@@ -17619,7 +17723,65 @@ var LibraryRenderer = class {
       if (this.editingEquationId !== null) void this.openEquationNote(this.editingEquationId);
     });
     this.openNoteButton.buttonEl.hide();
+    new import_obsidian5.ButtonComponent(buttons).setButtonText("New").setTooltip("Clear the generator and start a fresh equation.").onClick(() => this.clearGenerator());
     addButton.setTooltip("Save this equation to the library.");
+    this.refreshAddButton();
+  }
+  /** What the preview renders: the symbol and the equation, as the tiles show them. */
+  syncPreview() {
+    var _a2;
+    (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(joinSymbol(this.symbolInput.value, this.latex));
+  }
+  /** The generator's fields right now, in the same shape as a saved equation. */
+  snapshot() {
+    return {
+      name: this.nameInput.value.trim(),
+      symbol: this.symbolInput.value.trim(),
+      note: this.noteInput.value,
+      latex: this.currentLatex(),
+      category: this.generatorCategory
+    };
+  }
+  /**
+   * "Add to Library" is hidden while the generator holds a library equation
+   * exactly as it was loaded: adding it again cannot do anything but report
+   * that it is already there. Change any field and it comes back — that is
+   * the point at which adding means something (a new equation alongside the
+   * old one, where Update would overwrite it).
+   */
+  refreshAddButton() {
+    const button = this.addButton;
+    if (!button) return;
+    const baseline = this.editingBaseline;
+    const unchanged = this.editingEquationId !== null && baseline !== null && this.matchesBaseline(baseline, this.snapshot());
+    button.buttonEl.toggle(!unchanged);
+  }
+  matchesBaseline(baseline, current) {
+    return baseline.name === current.name && baseline.symbol === current.symbol && baseline.note.trim() === current.note.trim() && baseline.latex === current.latex && baseline.category === current.category;
+  }
+  /**
+   * Empties the generator for a new equation: the fields, the identity of the
+   * equation being edited, and any pending edit-in-place — that range belongs
+   * to the equation just cleared. The category is left alone, since the next
+   * equation is usually filed with the last one.
+   */
+  clearGenerator() {
+    var _a2, _b2;
+    this.latex = "";
+    this.latexInput.value = "";
+    this.nameInput.value = "";
+    this.symbolInput.value = "";
+    this.noteInput.value = "";
+    this.editingEquationId = null;
+    this.editingBaseline = null;
+    this.replace = null;
+    this.syncPreview();
+    (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.hide();
+    (_b2 = this.openNoteButton) == null ? void 0 : _b2.buttonEl.hide();
+    this.setPrimaryButton();
+    this.refreshAddButton();
+    this.refreshEditorState();
+    this.latexInput.focus();
   }
   /** The modifier the platform actually uses, for tooltips. */
   modifierLabel() {
@@ -17657,20 +17819,22 @@ var LibraryRenderer = class {
    * which is now possible because the panel never closed.
    */
   loadPrefill(prefill) {
-    var _a2, _b2, _c2;
+    var _a2, _b2;
     if (!prefill || prefill.latex.length === 0) return;
     this.latex = stripDelimiters(prefill.latex);
     this.latexInput.value = this.latex;
-    (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(this.latex);
     this.editingEquationId = null;
+    this.editingBaseline = null;
     this.nameInput.value = "";
     this.symbolInput.value = "";
     this.noteInput.value = "";
-    (_b2 = this.updateButton) == null ? void 0 : _b2.buttonEl.hide();
-    (_c2 = this.openNoteButton) == null ? void 0 : _c2.buttonEl.hide();
+    this.syncPreview();
+    (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.hide();
+    (_b2 = this.openNoteButton) == null ? void 0 : _b2.buttonEl.hide();
     this.replace = prefill.range ? { range: prefill.range, latex: this.latex, mode: prefill.mode, filePath: prefill.filePath } : null;
     this.setPrimaryButton();
     this.adoptPrefilledEquation();
+    this.refreshAddButton();
     this.refreshEditorState();
   }
   /** The primary button says what it will do: replace in place, or insert. */
@@ -17685,9 +17849,14 @@ var LibraryRenderer = class {
   // ----------------------------------------------------------------- data
   async refreshCatalog() {
     this.catalog = await this.deps.loadCatalog();
+    this.stale = false;
     this.syncCategorySelectors();
     this.fillUsageFilter();
-    this.adoptPrefilledEquation();
+    if (!this.loaded) {
+      this.loaded = true;
+      this.adoptPrefilledEquation();
+    }
+    this.refreshAddButton();
     this.renderGrid();
   }
   /**
@@ -17702,15 +17871,24 @@ var LibraryRenderer = class {
   }
   /** Makes the generator edit `equation` in place: fields filled, Update shown. */
   adoptEquation(equation) {
-    var _a2, _b2, _c2, _d2;
+    var _a2, _b2, _c2, _d2, _e2, _f2, _g2;
     this.nameInput.value = equation.name;
     this.symbolInput.value = (_a2 = equation.symbol) != null ? _a2 : "";
     this.noteInput.value = (_b2 = equation.note) != null ? _b2 : "";
     this.generatorCategory = equation.category;
     this.generatorCategoryEl.value = equation.category;
     this.editingEquationId = equation.id;
-    (_c2 = this.updateButton) == null ? void 0 : _c2.buttonEl.show();
-    (_d2 = this.openNoteButton) == null ? void 0 : _d2.buttonEl.show();
+    this.editingBaseline = {
+      name: equation.name,
+      symbol: (_d2 = (_c2 = equation.symbol) == null ? void 0 : _c2.trim()) != null ? _d2 : "",
+      note: (_e2 = equation.note) != null ? _e2 : "",
+      latex: equation.latex,
+      category: equation.category
+    };
+    this.syncPreview();
+    (_f2 = this.updateButton) == null ? void 0 : _f2.buttonEl.show();
+    (_g2 = this.openNoteButton) == null ? void 0 : _g2.buttonEl.show();
+    this.refreshAddButton();
   }
   syncCategorySelectors() {
     const filter = this.rootEl.querySelector(".eqlib-category-filter");
@@ -17820,10 +17998,8 @@ var LibraryRenderer = class {
    * document, not to this one.
    */
   loadIntoGenerator(equation) {
-    var _a2;
     this.latex = equation.latex;
     this.latexInput.value = equation.latex;
-    (_a2 = this.mathField) == null ? void 0 : _a2.setLatex(equation.latex);
     this.adoptEquation(equation);
     this.replace = null;
     this.setPrimaryButton();
@@ -17921,6 +18097,7 @@ var LibraryRenderer = class {
       category: equation.category
     });
   }
+  /** Copies what the preview shows, symbol and all. */
   async onCopyPng() {
     const latex = this.currentLatex();
     if (latex.length === 0) {
@@ -17928,7 +18105,7 @@ var LibraryRenderer = class {
       return;
     }
     try {
-      await copyLatexAsPng(this.rootEl.ownerDocument, latex, "block");
+      await copyLatexAsPng(this.rootEl.ownerDocument, joinSymbol(this.symbolInput.value, latex), "block");
       new import_obsidian5.Notice("Copied the equation as a PNG.");
     } catch (error) {
       new import_obsidian5.Notice(`Could not copy the equation as a PNG: ${String(error)}`);
@@ -18028,8 +18205,10 @@ var LibraryRenderer = class {
     new import_obsidian5.Notice(`Updated "${name}".`);
     this.deps.log({ action: "update-equation", latex, name, category: this.generatorCategory });
     this.editingEquationId = null;
+    this.editingBaseline = null;
     (_a2 = this.updateButton) == null ? void 0 : _a2.buttonEl.hide();
     (_b2 = this.openNoteButton) == null ? void 0 : _b2.buttonEl.hide();
+    this.refreshAddButton();
   }
   // ------------------------------------------------------------ catalogue
   showTileMenu(equation, event) {
@@ -18190,6 +18369,8 @@ var EquationLibraryView = class extends import_obsidian5.ItemView {
     super(leaf);
     this.deps = deps;
     this.renderer = null;
+    /** Whether the leaf was on screen last time the workspace changed shape. */
+    this.wasShown = false;
   }
   getViewType() {
     return LIBRARY_VIEW_TYPE;
@@ -18205,6 +18386,17 @@ var EquationLibraryView = class extends import_obsidian5.ItemView {
     this.renderer.mount(this.contentEl);
     this.renderer.loadPrefill(this.prefill);
     this.prefill = void 0;
+    this.wasShown = this.containerEl.isShown();
+    const check = () => this.checkShown();
+    this.registerEvent(this.app.workspace.on("layout-change", check));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", check));
+  }
+  checkShown() {
+    var _a2;
+    const shown = this.containerEl.isShown();
+    const appeared = shown && !this.wasShown;
+    this.wasShown = shown;
+    if (appeared) (_a2 = this.renderer) == null ? void 0 : _a2.viewShown();
   }
   async onClose() {
     var _a2;
@@ -18527,6 +18719,14 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
      * the caret is only the fallback.
      */
     this.lastContextMenu = null;
+    /**
+     * Panels that want to hear about a change under the library folder.
+     *
+     * The note store already drops its cache on such a change, but a panel that
+     * is on screen has a rendered copy of the catalog of its own; without this it
+     * keeps showing the library as it was when the panel opened.
+     */
+    this.libraryListeners = /* @__PURE__ */ new Set();
   }
   async onload() {
     const raw = await this.loadData();
@@ -18573,6 +18773,7 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
     const touched = (file, oldPath) => {
       if (this.noteStore.isLibraryPath(file.path) || oldPath !== void 0 && this.noteStore.isLibraryPath(oldPath)) {
         this.noteStore.invalidate();
+        for (const listener of this.libraryListeners) listener();
       }
     };
     this.registerEvent(this.app.metadataCache.on("changed", (file) => touched(file)));
@@ -18680,7 +18881,11 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
       now: () => (/* @__PURE__ */ new Date()).toISOString(),
       isMobile: import_obsidian10.Platform.isMobile,
       getEditor: () => this.editors.resolve(),
-      onEditorChange: (listener) => this.editors.subscribe(listener)
+      onEditorChange: (listener) => this.editors.subscribe(listener),
+      onLibraryChange: (listener) => {
+        this.libraryListeners.add(listener);
+        return () => this.libraryListeners.delete(listener);
+      }
     };
   }
   /**
