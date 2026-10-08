@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => EquationLibraryPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian10 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/core/latex.ts
 function stripDelimiters(raw) {
@@ -216,67 +216,6 @@ function appendWithCap(existing, entry, cap) {
   return applyCap([...existing, entry], cap);
 }
 
-// src/core/suggest.ts
-var DEFAULT_TRIGGER = "$/";
-var QUERY_CHARS = "[A-Za-z0-9_-]*";
-function isSuggestEnabled(flags) {
-  return flags.settingEnabled && !flags.isPhone;
-}
-function escapeRegex(text) {
-  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-}
-function buildTriggerPattern(trigger) {
-  const escaped = escapeRegex(trigger);
-  const guard = trigger.length > 0 ? `(?<!${escapeRegex(trigger[0])})` : "";
-  return new RegExp(`${guard}${escaped}(${QUERY_CHARS})$`);
-}
-function matchTrigger(linePrefix, trigger) {
-  if (trigger.length === 0) return null;
-  const match = buildTriggerPattern(trigger).exec(linePrefix);
-  if (!match) return null;
-  const query = match[1];
-  const end = linePrefix.length;
-  return { query, start: end - query.length - trigger.length, end };
-}
-function isCodeContext(precedingLines, linePrefix) {
-  let fence = null;
-  for (const line of precedingLines) {
-    const match = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (!match) continue;
-    const marker = match[1][0];
-    if (fence === null) fence = marker;
-    else if (fence === marker) fence = null;
-  }
-  if (fence !== null) return true;
-  const runs = linePrefix.match(/`+/g);
-  return runs !== null && runs.length % 2 === 1;
-}
-function dismissAt(site) {
-  return { file: site.file, line: site.line, start: site.start };
-}
-function isDismissed(state, site) {
-  if (state === null) return false;
-  return state.file === site.file && state.line === site.line && state.start === site.start;
-}
-function reconcileDismissal(state, site) {
-  return isDismissed(state, site) ? state : null;
-}
-function dismissalOnClose(state, close) {
-  if (close.accepting) return null;
-  if (close.site === null || !close.hadSuggestions) return state;
-  return dismissAt(close.site);
-}
-function decideTrigger(context, trigger, flags, state) {
-  if (!isSuggestEnabled(flags)) return { decision: null, state };
-  const match = matchTrigger(context.linePrefix, trigger);
-  if (!match) return { decision: null, state: null };
-  if (isCodeContext(context.getPrecedingLines(), context.linePrefix)) return { decision: null, state };
-  const site = { file: context.file, line: context.line, start: match.start };
-  const reconciled = reconcileDismissal(state, site);
-  if (isDismissed(reconciled, site)) return { decision: null, state: reconciled };
-  return { decision: { match, site }, state: reconciled };
-}
-
 // src/core/types.ts
 var CURRENT_SCHEMA_VERSION = 1;
 var UNCATEGORIZED = "Uncategorized";
@@ -286,97 +225,6 @@ function ok(value) {
 function fail(error) {
   return { ok: false, error };
 }
-
-// src/core/settings.ts
-var DEFAULT_KEYS = {
-  name: "Name",
-  latex: "Eq",
-  symbol: "Smb",
-  category: "Category",
-  note: "Note",
-  usage: "Usage",
-  source: "Source"
-};
-var DEFAULT_LIBRARY_FOLDER = "Equation Library";
-var DEFAULT_FILE_PREFIX = "eq-";
-var DEFAULT_SETTINGS = {
-  insertFormat: "inline",
-  suggestEnabled: true,
-  suggestTrigger: DEFAULT_TRIGGER,
-  logCap: DEFAULT_LOG_CAP,
-  sortOrder: "name",
-  lastCategory: null,
-  libraryFolder: DEFAULT_LIBRARY_FOLDER,
-  templatePath: "",
-  filePrefix: DEFAULT_FILE_PREFIX,
-  keys: DEFAULT_KEYS,
-  categories: []
-};
-var SORT_ORDERS = ["name", "created", "modified"];
-var INSERT_FORMATS = ["inline", "always-block"];
-function normalizeVaultPath(raw, fallback) {
-  if (typeof raw !== "string") return fallback;
-  const path = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "");
-  if (path.length === 0 || path.split("/").includes("..")) return fallback;
-  return path;
-}
-function normalizeKey(raw, fallback) {
-  if (typeof raw !== "string") return fallback;
-  const key = raw.trim();
-  if (key.length === 0 || key.includes(":") || /^\s|\s$/.test(key)) return fallback;
-  return key;
-}
-function normalizeKeys(raw) {
-  const record = typeof raw === "object" && raw !== null ? raw : {};
-  return {
-    name: normalizeKey(record.name, DEFAULT_KEYS.name),
-    latex: normalizeKey(record.latex, DEFAULT_KEYS.latex),
-    symbol: normalizeKey(record.symbol, DEFAULT_KEYS.symbol),
-    category: normalizeKey(record.category, DEFAULT_KEYS.category),
-    note: normalizeKey(record.note, DEFAULT_KEYS.note),
-    usage: normalizeKey(record.usage, DEFAULT_KEYS.usage),
-    source: normalizeKey(record.source, DEFAULT_KEYS.source)
-  };
-}
-function normalizeCategories(raw) {
-  if (!Array.isArray(raw)) return [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const value of raw) {
-    if (typeof value !== "string") continue;
-    const category = value.trim();
-    if (category.length === 0 || category === UNCATEGORIZED) continue;
-    seen.add(category);
-  }
-  return [...seen];
-}
-function pickBoolean(value, fallback) {
-  return typeof value === "boolean" ? value : fallback;
-}
-function pickFrom(value, allowed, fallback) {
-  return allowed.includes(value) ? value : fallback;
-}
-function normalizeSettings(raw) {
-  if (typeof raw !== "object" || raw === null) return DEFAULT_SETTINGS;
-  const record = raw;
-  const trigger = typeof record.suggestTrigger === "string" ? record.suggestTrigger.trim() : "";
-  const prefix = typeof record.filePrefix === "string" ? record.filePrefix.trim() : DEFAULT_FILE_PREFIX;
-  return {
-    insertFormat: pickFrom(record.insertFormat, INSERT_FORMATS, DEFAULT_SETTINGS.insertFormat),
-    suggestEnabled: pickBoolean(record.suggestEnabled, DEFAULT_SETTINGS.suggestEnabled),
-    // An empty trigger would make every keystroke a trigger, so it falls back.
-    suggestTrigger: trigger.length > 0 ? trigger : DEFAULT_SETTINGS.suggestTrigger,
-    logCap: pickFrom(record.logCap, LOG_CAPS, DEFAULT_SETTINGS.logCap),
-    sortOrder: pickFrom(record.sortOrder, SORT_ORDERS, DEFAULT_SETTINGS.sortOrder),
-    lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0 ? record.lastCategory : null,
-    libraryFolder: normalizeVaultPath(record.libraryFolder, DEFAULT_LIBRARY_FOLDER),
-    templatePath: normalizeVaultPath(record.templatePath, ""),
-    // An empty prefix is a legitimate choice; only a path separator is refused.
-    filePrefix: prefix.includes("/") ? DEFAULT_FILE_PREFIX : prefix,
-    keys: normalizeKeys(record.keys),
-    categories: normalizeCategories(record.categories)
-  };
-}
-var SUGGEST_LIMIT = 20;
 
 // src/core/catalog.ts
 function createCatalog() {
@@ -498,6 +346,15 @@ function deleteCategory(catalog, name) {
 function orderedCategories(catalog) {
   const rest = catalog.categories.filter((c) => c !== UNCATEGORIZED).slice().sort((a, b) => a.localeCompare(b));
   return [UNCATEGORIZED, ...rest];
+}
+function categoryCounts(catalog) {
+  var _a2;
+  const counts = {};
+  for (const category of catalog.categories) counts[category] = 0;
+  for (const equation of catalog.equations) {
+    counts[equation.category] = ((_a2 = counts[equation.category]) != null ? _a2 : 0) + 1;
+  }
+  return counts;
 }
 
 // src/core/migrate.ts
@@ -623,6 +480,221 @@ function serializeCatalog(catalog) {
   });
   return JSON.stringify({ ...catalog, equations }, null, 2) + "\n";
 }
+
+// src/core/export.ts
+var EXPORT_FORMATS = ["markdown", "json"];
+var EXPORT_FORMAT_LABELS = {
+  markdown: "Markdown (.md)",
+  json: "JSON (.json, re-importable)"
+};
+var EXTENSIONS = { markdown: "md", json: "json" };
+var MIME_TYPES = { markdown: "text/markdown", json: "application/json" };
+function exportExtension(format) {
+  return EXTENSIONS[format];
+}
+function exportMimeType(format) {
+  return MIME_TYPES[format];
+}
+function selectForExport(catalog, category) {
+  if (category === null) return catalog;
+  return {
+    ...catalog,
+    categories: [category],
+    equations: catalog.equations.filter((e) => e.category === category)
+  };
+}
+function displayLatex(equation) {
+  return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
+}
+function serializeMarkdown(catalog) {
+  var _a2;
+  const byCategory = /* @__PURE__ */ new Map();
+  for (const equation of catalog.equations) {
+    const list = (_a2 = byCategory.get(equation.category)) != null ? _a2 : [];
+    list.push(equation);
+    byCategory.set(equation.category, list);
+  }
+  const order = orderedCategories(catalog);
+  const extra = [...byCategory.keys()].filter((c) => !order.includes(c)).sort((a, b) => a.localeCompare(b));
+  const sections = [];
+  for (const category of [...order, ...extra]) {
+    const equations = byCategory.get(category);
+    if (!equations || equations.length === 0) continue;
+    const parts = [`# ${category}`];
+    for (const equation of equations.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+      parts.push(`## ${equation.name}`);
+      parts.push(`$$
+${displayLatex(equation).trim()}
+$$`);
+      if (equation.note) parts.push(equation.note.trim());
+    }
+    sections.push(parts.join("\n\n"));
+  }
+  return sections.join("\n\n") + "\n";
+}
+function serializeExport(catalog, format) {
+  return format === "json" ? serializeCatalog(catalog) : serializeMarkdown(catalog);
+}
+var UNSAFE_FILE_CHARS = /[\\/:*?"<>|#^[\]]/g;
+function defaultExportFileName(format, category) {
+  const base = category === null ? "Equation Library" : `Equation Library - ${category}`;
+  const safe = base.replace(UNSAFE_FILE_CHARS, "-").replace(/\s+/g, " ").trim();
+  return `${safe}.${exportExtension(format)}`;
+}
+
+// src/core/suggest.ts
+var DEFAULT_TRIGGER = "$/";
+var QUERY_CHARS = "[A-Za-z0-9_-]*";
+function isSuggestEnabled(flags) {
+  return flags.settingEnabled && !flags.isPhone;
+}
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+function buildTriggerPattern(trigger) {
+  const escaped = escapeRegex(trigger);
+  const guard = trigger.length > 0 ? `(?<!${escapeRegex(trigger[0])})` : "";
+  return new RegExp(`${guard}${escaped}(${QUERY_CHARS})$`);
+}
+function matchTrigger(linePrefix, trigger) {
+  if (trigger.length === 0) return null;
+  const match = buildTriggerPattern(trigger).exec(linePrefix);
+  if (!match) return null;
+  const query = match[1];
+  const end = linePrefix.length;
+  return { query, start: end - query.length - trigger.length, end };
+}
+function isCodeContext(precedingLines, linePrefix) {
+  let fence = null;
+  for (const line of precedingLines) {
+    const match = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (!match) continue;
+    const marker = match[1][0];
+    if (fence === null) fence = marker;
+    else if (fence === marker) fence = null;
+  }
+  if (fence !== null) return true;
+  const runs = linePrefix.match(/`+/g);
+  return runs !== null && runs.length % 2 === 1;
+}
+function dismissAt(site) {
+  return { file: site.file, line: site.line, start: site.start };
+}
+function isDismissed(state, site) {
+  if (state === null) return false;
+  return state.file === site.file && state.line === site.line && state.start === site.start;
+}
+function reconcileDismissal(state, site) {
+  return isDismissed(state, site) ? state : null;
+}
+function dismissalOnClose(state, close) {
+  if (close.accepting) return null;
+  if (close.site === null || !close.hadSuggestions) return state;
+  return dismissAt(close.site);
+}
+function decideTrigger(context, trigger, flags, state) {
+  if (!isSuggestEnabled(flags)) return { decision: null, state };
+  const match = matchTrigger(context.linePrefix, trigger);
+  if (!match) return { decision: null, state: null };
+  if (isCodeContext(context.getPrecedingLines(), context.linePrefix)) return { decision: null, state };
+  const site = { file: context.file, line: context.line, start: match.start };
+  const reconciled = reconcileDismissal(state, site);
+  if (isDismissed(reconciled, site)) return { decision: null, state: reconciled };
+  return { decision: { match, site }, state: reconciled };
+}
+
+// src/core/settings.ts
+var DEFAULT_KEYS = {
+  name: "Name",
+  latex: "Eq",
+  symbol: "Smb",
+  category: "Category",
+  note: "Note",
+  usage: "Usage",
+  source: "Source"
+};
+var DEFAULT_LIBRARY_FOLDER = "Equation Library";
+var DEFAULT_FILE_PREFIX = "eq-";
+var DEFAULT_SETTINGS = {
+  insertFormat: "inline",
+  suggestEnabled: true,
+  suggestTrigger: DEFAULT_TRIGGER,
+  logCap: DEFAULT_LOG_CAP,
+  sortOrder: "name",
+  lastCategory: null,
+  libraryFolder: DEFAULT_LIBRARY_FOLDER,
+  templatePath: "",
+  filePrefix: DEFAULT_FILE_PREFIX,
+  keys: DEFAULT_KEYS,
+  categories: [],
+  exportFormat: "markdown"
+};
+var SORT_ORDERS = ["name", "created", "modified"];
+var INSERT_FORMATS = ["inline", "always-block"];
+function normalizeVaultPath(raw, fallback) {
+  if (typeof raw !== "string") return fallback;
+  const path = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  if (path.length === 0 || path.split("/").includes("..")) return fallback;
+  return path;
+}
+function normalizeKey(raw, fallback) {
+  if (typeof raw !== "string") return fallback;
+  const key = raw.trim();
+  if (key.length === 0 || key.includes(":") || /^\s|\s$/.test(key)) return fallback;
+  return key;
+}
+function normalizeKeys(raw) {
+  const record = typeof raw === "object" && raw !== null ? raw : {};
+  return {
+    name: normalizeKey(record.name, DEFAULT_KEYS.name),
+    latex: normalizeKey(record.latex, DEFAULT_KEYS.latex),
+    symbol: normalizeKey(record.symbol, DEFAULT_KEYS.symbol),
+    category: normalizeKey(record.category, DEFAULT_KEYS.category),
+    note: normalizeKey(record.note, DEFAULT_KEYS.note),
+    usage: normalizeKey(record.usage, DEFAULT_KEYS.usage),
+    source: normalizeKey(record.source, DEFAULT_KEYS.source)
+  };
+}
+function normalizeCategories(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const value of raw) {
+    if (typeof value !== "string") continue;
+    const category = value.trim();
+    if (category.length === 0 || category === UNCATEGORIZED) continue;
+    seen.add(category);
+  }
+  return [...seen];
+}
+function pickBoolean(value, fallback) {
+  return typeof value === "boolean" ? value : fallback;
+}
+function pickFrom(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback;
+}
+function normalizeSettings(raw) {
+  if (typeof raw !== "object" || raw === null) return DEFAULT_SETTINGS;
+  const record = raw;
+  const trigger = typeof record.suggestTrigger === "string" ? record.suggestTrigger.trim() : "";
+  const prefix = typeof record.filePrefix === "string" ? record.filePrefix.trim() : DEFAULT_FILE_PREFIX;
+  return {
+    insertFormat: pickFrom(record.insertFormat, INSERT_FORMATS, DEFAULT_SETTINGS.insertFormat),
+    suggestEnabled: pickBoolean(record.suggestEnabled, DEFAULT_SETTINGS.suggestEnabled),
+    // An empty trigger would make every keystroke a trigger, so it falls back.
+    suggestTrigger: trigger.length > 0 ? trigger : DEFAULT_SETTINGS.suggestTrigger,
+    logCap: pickFrom(record.logCap, LOG_CAPS, DEFAULT_SETTINGS.logCap),
+    sortOrder: pickFrom(record.sortOrder, SORT_ORDERS, DEFAULT_SETTINGS.sortOrder),
+    lastCategory: typeof record.lastCategory === "string" && record.lastCategory.length > 0 ? record.lastCategory : null,
+    libraryFolder: normalizeVaultPath(record.libraryFolder, DEFAULT_LIBRARY_FOLDER),
+    templatePath: normalizeVaultPath(record.templatePath, ""),
+    // An empty prefix is a legitimate choice; only a path separator is refused.
+    filePrefix: prefix.includes("/") ? DEFAULT_FILE_PREFIX : prefix,
+    keys: normalizeKeys(record.keys),
+    categories: normalizeCategories(record.categories),
+    exportFormat: pickFrom(record.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat)
+  };
+}
+var SUGGEST_LIMIT = 20;
 
 // src/storage/log-store.ts
 var import_obsidian = require("obsidian");
@@ -17657,6 +17729,7 @@ var LibraryRenderer = class {
     new import_obsidian5.ButtonComponent(actions).setIcon("folder-plus").setTooltip("New category").onClick(() => this.promptNewCategory());
     new import_obsidian5.ButtonComponent(actions).setIcon("pencil").setTooltip("Rename the selected category").onClick(() => this.promptRenameCategory());
     new import_obsidian5.ButtonComponent(actions).setIcon("trash-2").setTooltip("Delete the selected category (its equations move to Uncategorized)").onClick(() => this.confirmDeleteCategory());
+    new import_obsidian5.ButtonComponent(actions).setIcon("download").setTooltip("Export equations").onClick(() => this.deps.exportEquations(this.category));
   }
   /** The x only exists while there is something to clear. */
   syncSearchClear() {
@@ -18647,10 +18720,111 @@ var ImportModal = class extends import_obsidian8.Modal {
   }
 };
 
-// src/ui/settings-tab.ts
+// src/ui/export-modal.ts
 var import_obsidian9 = require("obsidian");
+var ALL = "__all__";
+var ExportModal = class extends import_obsidian9.Modal {
+  constructor(app, options, onChoose) {
+    super(app);
+    this.options = options;
+    this.onChoose = onChoose;
+    this.format = options.format;
+    const known = orderedCategories(options.catalog);
+    this.category = options.category !== null && known.includes(options.category) ? options.category : null;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Export equations" });
+    const { catalog } = this.options;
+    const counts = categoryCounts(catalog);
+    let exportButton;
+    const summary = contentEl.createEl("p", { cls: "setting-item-description" });
+    const syncSummary = () => {
+      var _a2;
+      const count = this.category === null ? catalog.equations.length : (_a2 = counts[this.category]) != null ? _a2 : 0;
+      summary.setText(`${count} equation${count === 1 ? "" : "s"} will be exported.`);
+      exportButton == null ? void 0 : exportButton.setDisabled(count === 0);
+    };
+    new import_obsidian9.Setting(contentEl).setName("Equations").setDesc("Export the whole library, or only one category.").addDropdown((dropdown) => {
+      var _a2, _b2;
+      dropdown.addOption(ALL, `All (${catalog.equations.length})`);
+      for (const category of orderedCategories(catalog)) {
+        dropdown.addOption(category, `${category} (${(_a2 = counts[category]) != null ? _a2 : 0})`);
+      }
+      dropdown.setValue((_b2 = this.category) != null ? _b2 : ALL).onChange((value) => {
+        this.category = value === ALL ? null : value;
+        syncSummary();
+      });
+    });
+    new import_obsidian9.Setting(contentEl).setName("Format").setDesc("The default is set in Settings \u2192 Equation Library \u2192 Import and export.").addDropdown(
+      (dropdown) => dropdown.addOptions(EXPORT_FORMAT_LABELS).setValue(this.format).onChange((value) => {
+        this.format = value;
+      })
+    );
+    new import_obsidian9.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton((button) => {
+      exportButton = button;
+      button.setButtonText("Choose location\u2026").setCta().onClick(() => {
+        this.close();
+        this.onChoose({ category: this.category, format: this.format });
+      });
+    });
+    syncSummary();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
+// src/ui/save-location.ts
+var import_obsidian10 = require("obsidian");
+function picker() {
+  const candidate = window.showSaveFilePicker;
+  return typeof candidate === "function" ? candidate.bind(window) : void 0;
+}
+function hasOsSaveDialog(isMobile) {
+  return !isMobile && picker() !== void 0;
+}
+async function saveWithOsDialog(request) {
+  const show = picker();
+  if (!show) return void 0;
+  let handle;
+  try {
+    handle = await show({
+      suggestedName: request.fileName,
+      types: [{ description: request.description, accept: { [request.mimeType]: [`.${request.extension}`] } }]
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return null;
+    throw error;
+  }
+  const stream = await handle.createWritable();
+  await stream.write(request.contents);
+  await stream.close();
+  return handle.name;
+}
+var FolderPickerModal = class extends import_obsidian10.FuzzySuggestModal {
+  constructor(app, onPick) {
+    super(app);
+    this.onPick = onPick;
+    this.setPlaceholder("Choose a vault folder to save the export in");
+  }
+  getItems() {
+    const folders = this.app.vault.getAllLoadedFiles().filter((f) => f instanceof import_obsidian10.TFolder);
+    return folders.sort((a, b) => a.isRoot() ? -1 : b.isRoot() ? 1 : a.path.localeCompare(b.path));
+  }
+  getItemText(folder) {
+    return folder.isRoot() ? "/ (vault root)" : folder.path;
+  }
+  onChooseItem(folder) {
+    this.onPick(folder);
+  }
+};
+
+// src/ui/settings-tab.ts
+var import_obsidian11 = require("obsidian");
 var GITHUB_URL = "https://github.com/jsglazer/equation-library";
-var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab {
+var EquationLibrarySettingTab = class extends import_obsidian11.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -18669,23 +18843,23 @@ var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab 
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian9.Setting(containerEl).setName("Library").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Insert format").setDesc("Which delimiters an unmodified insert uses. Holding shift always inserts a block equation.").addDropdown(
+    new import_obsidian11.Setting(containerEl).setName("Library").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Insert format").setDesc("Which delimiters an unmodified insert uses. Holding shift always inserts a block equation.").addDropdown(
       (dropdown) => dropdown.addOptions({ inline: "Inline \u2014 $\u2026$", "always-block": "Always block \u2014 $$\u2026$$" }).setValue(this.plugin.settings.insertFormat).onChange((value) => void this.plugin.updateSettings({ insertFormat: value }))
     );
-    new import_obsidian9.Setting(containerEl).setName("Editor autocomplete").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Enable autocomplete").setDesc("Suggest library equations in the editor. Always off on phones, where the popup fights the on-screen keyboard.").addToggle(
+    new import_obsidian11.Setting(containerEl).setName("Editor autocomplete").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Enable autocomplete").setDesc("Suggest library equations in the editor. Always off on phones, where the popup fights the on-screen keyboard.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.suggestEnabled).onChange((value) => void this.plugin.updateSettings({ suggestEnabled: value }))
     );
-    new import_obsidian9.Setting(containerEl).setName("Trigger").setDesc(`The characters that open the suggester. Default ${DEFAULT_TRIGGER}. A single $ is never a trigger, so ordinary math typing is untouched.`).addText(
+    new import_obsidian11.Setting(containerEl).setName("Trigger").setDesc(`The characters that open the suggester. Default ${DEFAULT_TRIGGER}. A single $ is never a trigger, so ordinary math typing is untouched.`).addText(
       (text) => text.setPlaceholder(DEFAULT_TRIGGER).setValue(this.plugin.settings.suggestTrigger).onChange((value) => {
         const trigger = value.trim();
         if (trigger.length === 0) return;
         void this.plugin.updateSettings({ suggestTrigger: trigger });
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Storage").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Library folder").setDesc(
+    new import_obsidian11.Setting(containerEl).setName("Storage").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Library folder").setDesc(
       `Vault folder whose notes make up the library. A note is an equation when its frontmatter has the LaTeX key; anything else in the folder is ignored. Default ${DEFAULT_LIBRARY_FOLDER}.`
     ).addText((text) => {
       text.setPlaceholder(DEFAULT_LIBRARY_FOLDER).setValue(this.plugin.settings.libraryFolder);
@@ -18698,7 +18872,7 @@ var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab 
         });
       });
     });
-    new import_obsidian9.Setting(containerEl).setName("Template note").setDesc(
+    new import_obsidian11.Setting(containerEl).setName("Template note").setDesc(
       "Optional. A note whose frontmatter keys and body are copied into every new equation note, so your own fields and boilerplate appear alongside the plugin's. Template tags such as <% \u2026 %> are blanked."
     ).addText((text) => {
       text.setPlaceholder("Templates/equation.md").setValue(this.plugin.settings.templatePath);
@@ -18707,14 +18881,14 @@ var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab 
         void this.plugin.updateSettings({ templatePath: value.trim() });
       });
     });
-    new import_obsidian9.Setting(containerEl).setName("New note file name prefix").setDesc(`Prepended to the equation's name to make the file name, so "Bayes Theorem" becomes ${DEFAULT_FILE_PREFIX}Bayes-Theorem.md. May be empty.`).addText((text) => {
+    new import_obsidian11.Setting(containerEl).setName("New note file name prefix").setDesc(`Prepended to the equation's name to make the file name, so "Bayes Theorem" becomes ${DEFAULT_FILE_PREFIX}Bayes-Theorem.md. May be empty.`).addText((text) => {
       text.setPlaceholder(DEFAULT_FILE_PREFIX).setValue(this.plugin.settings.filePrefix);
       this.commitOnBlur(text, (value) => {
         if (value.trim() === this.plugin.settings.filePrefix) return;
         void this.plugin.updateSettings({ filePrefix: value.trim() });
       });
     });
-    new import_obsidian9.Setting(containerEl).setName("Frontmatter keys").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Frontmatter keys").setHeading();
     containerEl.createEl("p", {
       cls: "setting-item-description",
       text: "The keys the plugin reads and writes in an equation note. Every other key, and the whole body, is left exactly as you wrote it. The name, LaTeX, symbol, category and note keys are written; usage and source are only read, for the filter and the search."
@@ -18729,7 +18903,7 @@ var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab 
       ["source", "Source", "Where it came from. Read only, for the search."]
     ];
     for (const [field, label, desc] of keyRows) {
-      new import_obsidian9.Setting(containerEl).setName(label).setDesc(`${desc} Default ${DEFAULT_KEYS[field]}.`).addText((text) => {
+      new import_obsidian11.Setting(containerEl).setName(label).setDesc(`${desc} Default ${DEFAULT_KEYS[field]}.`).addText((text) => {
         text.setPlaceholder(DEFAULT_KEYS[field]).setValue(this.plugin.settings.keys[field]);
         this.commitOnBlur(text, (value) => {
           const key = value.trim();
@@ -18738,30 +18912,32 @@ var EquationLibrarySettingTab = class extends import_obsidian9.PluginSettingTab 
         });
       });
     }
-    new import_obsidian9.Setting(containerEl).setName("Log").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Log size limit").setDesc("Entries kept in the log file. The oldest are dropped first; a smaller limit keeps mobile memory use low.").addDropdown(
+    new import_obsidian11.Setting(containerEl).setName("Log").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Log size limit").setDesc("Entries kept in the log file. The oldest are dropped first; a smaller limit keeps mobile memory use low.").addDropdown(
       (dropdown) => dropdown.addOptions({ "100": "100 entries", "500": "500 entries", "1000": "1000 entries", off: "No limit" }).setValue(String(this.plugin.settings.logCap)).onChange((value) => {
         const cap = value === "off" ? "off" : Number(value);
         void this.plugin.updateSettings({ logCap: cap }).then(() => this.plugin.recapLog());
       })
     );
-    new import_obsidian9.Setting(containerEl).setName("Equation log").setDesc(this.plugin.logStore.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
-    new import_obsidian9.Setting(containerEl).setName("Import and export").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Export library").setDesc("Write a JSON snapshot of every equation to a path in this vault.").addButton((button) => button.setButtonText("Export").onClick(() => this.plugin.promptExport()));
-    new import_obsidian9.Setting(containerEl).setName("Import equations").setDesc("Paste an exported catalog, including an equations.json from before version 1.1. Each equation becomes a note; LaTeX already in the library is skipped.").addButton((button) => button.setButtonText("Import").onClick(() => void this.plugin.promptImport()));
-    new import_obsidian9.Setting(containerEl).setName("About").setHeading();
-    new import_obsidian9.Setting(containerEl).setName("Equation Library").setDesc(`Version ${this.plugin.manifest.version}`).addButton(
+    new import_obsidian11.Setting(containerEl).setName("Equation log").setDesc(this.plugin.logStore.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
+    new import_obsidian11.Setting(containerEl).setName("Import and export").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Export format").setDesc("The format the export dialog starts with. Markdown is a readable document with a heading per category and per equation; JSON can be imported back.").addDropdown(
+      (dropdown) => dropdown.addOptions(EXPORT_FORMAT_LABELS).setValue(this.plugin.settings.exportFormat).onChange((value) => void this.plugin.updateSettings({ exportFormat: value }))
+    );
+    new import_obsidian11.Setting(containerEl).setName("Export equations").setDesc("Export the whole library or one category, then choose where to save it. Also available as a command and from the library panel.").addButton((button) => button.setButtonText("Export").onClick(() => void this.plugin.promptExport()));
+    new import_obsidian11.Setting(containerEl).setName("Import equations").setDesc("Paste an exported catalog, including an equations.json from before version 1.1. Each equation becomes a note; LaTeX already in the library is skipped.").addButton((button) => button.setButtonText("Import").onClick(() => void this.plugin.promptImport()));
+    new import_obsidian11.Setting(containerEl).setName("About").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Equation Library").setDesc(`Version ${this.plugin.manifest.version}`).addButton(
       (button) => button.setButtonText("GitHub").setTooltip(GITHUB_URL).onClick(() => {
         window.open(GITHUB_URL, "_blank");
-        new import_obsidian9.Notice("Opened the plugin page in your browser.");
+        new import_obsidian11.Notice("Opened the plugin page in your browser.");
       })
     );
   }
 };
 
 // src/main.ts
-var DEFAULT_EXPORT_PATH = "equation-library-export.json";
-var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
+var EquationLibraryPlugin = class extends import_obsidian12.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -18791,7 +18967,7 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
       saveCategories: (categories) => this.updateSettings({ categories })
     });
     this.noticeLegacyCatalog(raw);
-    configureMathLive({ virtualKeyboard: import_obsidian10.Platform.isMobile });
+    configureMathLive({ virtualKeyboard: import_obsidian12.Platform.isMobile });
     this.editors = new EditorTracker(this.app, (leaf) => leaf.view instanceof EquationLibraryView);
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => this.editors.handleActiveLeafChange(leaf))
@@ -18809,6 +18985,11 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
       id: "show-equation-library-window",
       name: "Show Equation Library in a new window",
       callback: () => void this.openLibrary(this.prefillFromActiveEditor(), true)
+    });
+    this.addCommand({
+      id: "export-equations",
+      name: "Export equations",
+      callback: () => void this.promptExport()
     });
     this.addRibbonIcon("sigma", "Show Equation Library", () => void this.openLibrary());
     this.registerDomEvent(document, "contextmenu", (event) => {
@@ -18866,7 +19047,7 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
     const record = raw;
     if (!("catalogPath" in record) && !("catalogLocation" in record)) return;
     const path = typeof record.catalogPath === "string" ? record.catalogPath : "equations.json";
-    new import_obsidian10.Notice(
+    new import_obsidian12.Notice(
       `Equation Library now keeps equations as notes in "${this.settings.libraryFolder}". Your old ${path} is no longer read \u2014 paste it into Settings \u2192 Import to turn it into notes.`,
       15e3
     );
@@ -18933,9 +19114,10 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
       log: (request) => this.log(request),
       mintId: () => `new:${crypto.randomUUID()}`,
       now: () => (/* @__PURE__ */ new Date()).toISOString(),
-      isMobile: import_obsidian10.Platform.isMobile,
+      isMobile: import_obsidian12.Platform.isMobile,
       getEditor: () => this.editors.resolve(),
       onEditorChange: (listener) => this.editors.subscribe(listener),
+      exportEquations: (category) => void this.promptExport(category),
       onLibraryChange: (listener) => {
         this.libraryListeners.add(listener);
         return () => this.libraryListeners.delete(listener);
@@ -18971,7 +19153,7 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
   log(request) {
     const entry = createLogEntry({ ...request, now: (/* @__PURE__ */ new Date()).toISOString() });
     void this.logStore.appendLog(entry, this.settings.logCap).catch((error) => {
-      new import_obsidian10.Notice(`Equation Library: could not write the log (${String(error)}).`);
+      new import_obsidian12.Notice(`Equation Library: could not write the log (${String(error)}).`);
     });
   }
   async showLogFile() {
@@ -18983,24 +19165,68 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
       emptyMessage: "Nothing has been inserted or saved yet, so the log is empty."
     }).open();
   }
-  promptExport() {
-    new PromptModal(
+  /**
+   * The export flow: the dialog picks the equations and the format, then the
+   * user picks where the file goes — the OS Save As dialog on desktop, a vault
+   * folder on mobile. `category` preselects a category in the dialog.
+   */
+  async promptExport(category = null) {
+    const catalog = await this.noteStore.loadCatalog();
+    if (catalog.equations.length === 0) {
+      new import_obsidian12.Notice("The library is empty, so there is nothing to export.");
+      return;
+    }
+    new ExportModal(
       this.app,
-      {
-        title: "Export library",
-        placeholder: DEFAULT_EXPORT_PATH,
-        initialValue: DEFAULT_EXPORT_PATH,
-        cta: "Export",
-        validate: (value) => value.trim().length === 0 ? "Enter a path inside this vault." : null
-      },
-      (value) => {
-        void (async () => {
-          const catalog = await this.noteStore.loadCatalog();
-          const path = await this.logStore.writeVaultFile(value.trim(), serializeCatalog(catalog));
-          new import_obsidian10.Notice(`Exported ${catalog.equations.length} equations to ${path}.`);
-        })();
-      }
+      { catalog, format: this.settings.exportFormat, category },
+      (choice) => void this.saveExport(choice)
     ).open();
+  }
+  async saveExport(choice) {
+    const selected = selectForExport(await this.noteStore.loadCatalog(), choice.category);
+    const count = selected.equations.length;
+    const what = `${count} equation${count === 1 ? "" : "s"}`;
+    const request = {
+      fileName: defaultExportFileName(choice.format, choice.category),
+      extension: exportExtension(choice.format),
+      mimeType: exportMimeType(choice.format),
+      description: EXPORT_FORMAT_LABELS[choice.format],
+      contents: serializeExport(selected, choice.format)
+    };
+    if (hasOsSaveDialog(import_obsidian12.Platform.isMobile)) {
+      try {
+        const saved = await saveWithOsDialog(request);
+        if (saved === null) return;
+        if (saved !== void 0) {
+          new import_obsidian12.Notice(`Exported ${what} to ${saved}.`);
+          return;
+        }
+      } catch (error) {
+        new import_obsidian12.Notice(`Equation Library: the export could not be saved there (${String(error)}). Choose a vault folder instead.`);
+      }
+    }
+    new FolderPickerModal(this.app, (folder) => {
+      void (async () => {
+        try {
+          const path = await this.freeVaultPath(folder, request.fileName);
+          await this.logStore.writeVaultFile(path, request.contents);
+          new import_obsidian12.Notice(`Exported ${what} to ${path}.`);
+        } catch (error) {
+          new import_obsidian12.Notice(`Equation Library: the export failed (${String(error)}).`);
+        }
+      })();
+    }).open();
+  }
+  /** `folder/name.ext`, or `folder/name 2.ext` and so on when that is taken; never overwrites. */
+  async freeVaultPath(folder, fileName) {
+    const dot = fileName.lastIndexOf(".");
+    const stem = fileName.slice(0, dot);
+    const ext = fileName.slice(dot);
+    const prefix = folder.isRoot() ? "" : `${folder.path}/`;
+    for (let n = 1; ; n += 1) {
+      const path = (0, import_obsidian12.normalizePath)(`${prefix}${n === 1 ? stem : `${stem} ${n}`}${ext}`);
+      if (!await this.app.vault.adapter.exists(path)) return path;
+    }
   }
   async promptImport() {
     new ImportModal(this.app, (parsed) => {
@@ -19008,8 +19234,8 @@ var EquationLibraryPlugin = class extends import_obsidian10.Plugin {
         const existing = await this.noteStore.loadCatalog();
         const plan = planImport(existing, parsed.catalog);
         const created = await this.noteStore.createNotes(plan.toCreate);
-        for (const warning of parsed.warnings) new import_obsidian10.Notice(`Equation Library: ${warning}`);
-        new import_obsidian10.Notice(
+        for (const warning of parsed.warnings) new import_obsidian12.Notice(`Equation Library: ${warning}`);
+        new import_obsidian12.Notice(
           `Imported ${created} equation${created === 1 ? "" : "s"} as notes` + (plan.skipped.length > 0 ? `, ${plan.skipped.length} already in the library` : "") + "."
         );
       })();

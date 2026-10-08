@@ -9,6 +9,7 @@ import { DEFAULT_TRIGGER } from "../core/suggest";
 import { LogCap } from "../core/log";
 import { InsertFormat } from "../core/latex";
 import { DEFAULT_FILE_PREFIX, DEFAULT_KEYS, DEFAULT_LIBRARY_FOLDER, FrontmatterKeys } from "../core/settings";
+import { EXPORT_FORMAT_LABELS, ExportFormat } from "../core/export";
 
 const GITHUB_URL = "https://github.com/jsglazer/equation-library";
 
@@ -167,9 +168,19 @@ export class EquationLibrarySettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Import and export").setHeading();
 
 		new Setting(containerEl)
-			.setName("Export library")
-			.setDesc("Write a JSON snapshot of every equation to a path in this vault.")
-			.addButton((button) => button.setButtonText("Export").onClick(() => this.plugin.promptExport()));
+			.setName("Export format")
+			.setDesc("The format the export dialog starts with. Markdown is a readable document with a heading per category and per equation; JSON can be imported back.")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOptions(EXPORT_FORMAT_LABELS)
+					.setValue(this.plugin.settings.exportFormat)
+					.onChange((value) => void this.plugin.updateSettings({ exportFormat: value as ExportFormat })),
+			);
+
+		new Setting(containerEl)
+			.setName("Export equations")
+			.setDesc("Export the whole library or one category, then choose where to save it. Also available as a command and from the library panel.")
+			.addButton((button) => button.setButtonText("Export").onClick(() => void this.plugin.promptExport()));
 
 		new Setting(containerEl)
 			.setName("Import equations")

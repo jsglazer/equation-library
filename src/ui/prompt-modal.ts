@@ -1,6 +1,6 @@
 /**
- * A one-field text prompt, used for category names, equation names and the
- * export path. Obsidian has no built-in text prompt, and the alternative —
+ * A one-field text prompt, used for category names and equation names.
+ * Obsidian has no built-in text prompt, and the alternative —
  * `window.prompt` — is unavailable on mobile.
  */
 import { App, Modal, Setting } from "obsidian";

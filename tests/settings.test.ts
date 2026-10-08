@@ -31,6 +31,7 @@ describe("normalizeSettings", () => {
 			filePrefix: "eq-",
 			keys: { ...DEFAULT_KEYS, note: "Function" },
 			categories: ["Econ", "Stats"],
+			exportFormat: "json",
 		};
 		expect(normalizeSettings(stored)).toEqual(stored);
 	});

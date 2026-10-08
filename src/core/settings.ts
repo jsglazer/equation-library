@@ -10,6 +10,7 @@
  */
 import { InsertFormat } from "./latex";
 import { DEFAULT_LOG_CAP, LOG_CAPS, LogCap } from "./log";
+import { EXPORT_FORMATS, ExportFormat } from "./export";
 import { SortOrder } from "./search";
 import { DEFAULT_TRIGGER } from "./suggest";
 import { UNCATEGORIZED } from "./types";
@@ -76,6 +77,8 @@ export interface EquationLibrarySettings {
 	 * be created before its first equation. The reserved one is never stored.
 	 */
 	readonly categories: readonly string[];
+	/** The file format the export dialog writes. */
+	readonly exportFormat: ExportFormat;
 }
 
 export const DEFAULT_LIBRARY_FOLDER = "Equation Library";
@@ -93,6 +96,7 @@ export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	filePrefix: DEFAULT_FILE_PREFIX,
 	keys: DEFAULT_KEYS,
 	categories: [],
+	exportFormat: "markdown",
 };
 
 const SORT_ORDERS: readonly SortOrder[] = ["name", "created", "modified"];
@@ -182,6 +186,7 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 		filePrefix: prefix.includes("/") ? DEFAULT_FILE_PREFIX : prefix,
 		keys: normalizeKeys(record.keys),
 		categories: normalizeCategories(record.categories),
+		exportFormat: pickFrom(record.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat),
 	};
 }
 

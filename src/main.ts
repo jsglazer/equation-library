@@ -15,13 +15,23 @@ import {
 	Plugin,
 	Platform,
 	TAbstractFile,
+	TFolder,
 	WorkspaceLeaf,
+	normalizePath,
 } from "obsidian";
-import { Catalog, LogAction } from "./core/types";
+import { LogAction } from "./core/types";
 import { DEFAULT_SETTINGS, EquationLibrarySettings, normalizeSettings } from "./core/settings";
 import { findMathSpanAt } from "./core/latex";
 import { createLogEntry } from "./core/log";
-import { planImport, serializeCatalog } from "./core/import-export";
+import { planImport } from "./core/import-export";
+import {
+	EXPORT_FORMAT_LABELS,
+	defaultExportFileName,
+	exportExtension,
+	exportMimeType,
+	selectForExport,
+	serializeExport,
+} from "./core/export";
 import { LogStore } from "./storage/log-store";
 import { NoteStore } from "./storage/note-store";
 import { EquationSuggest } from "./editor/equation-suggest";
@@ -34,12 +44,11 @@ import {
 } from "./ui/library-view";
 import { EditorTracker } from "./ui/editor-tracker";
 import { ViewFileModal } from "./ui/view-file-modal";
-import { PromptModal } from "./ui/prompt-modal";
 import { ImportModal } from "./ui/import-modal";
+import { ExportChoice, ExportModal } from "./ui/export-modal";
+import { FolderPickerModal, SaveRequest, hasOsSaveDialog, saveWithOsDialog } from "./ui/save-location";
 import { EquationLibrarySettingTab } from "./ui/settings-tab";
 import { configureMathLive, removeMathLiveStyles } from "./ui/mathlive-adapter";
-
-const DEFAULT_EXPORT_PATH = "equation-library-export.json";
 
 export default class EquationLibraryPlugin extends Plugin {
 	settings: EquationLibrarySettings = DEFAULT_SETTINGS;
@@ -102,6 +111,12 @@ export default class EquationLibraryPlugin extends Plugin {
 			id: "show-equation-library-window",
 			name: "Show Equation Library in a new window",
 			callback: () => void this.openLibrary(this.prefillFromActiveEditor(), true),
+		});
+
+		this.addCommand({
+			id: "export-equations",
+			name: "Export equations",
+			callback: () => void this.promptExport(),
 		});
 
 		this.addRibbonIcon("sigma", "Show Equation Library", () => void this.openLibrary());
@@ -260,6 +275,7 @@ export default class EquationLibraryPlugin extends Plugin {
 			isMobile: Platform.isMobile,
 			getEditor: () => this.editors.resolve(),
 			onEditorChange: (listener) => this.editors.subscribe(listener),
+			exportEquations: (category) => void this.promptExport(category),
 			onLibraryChange: (listener) => {
 				this.libraryListeners.add(listener);
 				return () => this.libraryListeners.delete(listener);
@@ -313,24 +329,72 @@ export default class EquationLibraryPlugin extends Plugin {
 		}).open();
 	}
 
-	promptExport(): void {
-		new PromptModal(
+	/**
+	 * The export flow: the dialog picks the equations and the format, then the
+	 * user picks where the file goes — the OS Save As dialog on desktop, a vault
+	 * folder on mobile. `category` preselects a category in the dialog.
+	 */
+	async promptExport(category: string | null = null): Promise<void> {
+		const catalog = await this.noteStore.loadCatalog();
+		if (catalog.equations.length === 0) {
+			new Notice("The library is empty, so there is nothing to export.");
+			return;
+		}
+		new ExportModal(
 			this.app,
-			{
-				title: "Export library",
-				placeholder: DEFAULT_EXPORT_PATH,
-				initialValue: DEFAULT_EXPORT_PATH,
-				cta: "Export",
-				validate: (value) => (value.trim().length === 0 ? "Enter a path inside this vault." : null),
-			},
-			(value) => {
-				void (async () => {
-					const catalog: Catalog = await this.noteStore.loadCatalog();
-					const path = await this.logStore.writeVaultFile(value.trim(), serializeCatalog(catalog));
-					new Notice(`Exported ${catalog.equations.length} equations to ${path}.`);
-				})();
-			},
+			{ catalog, format: this.settings.exportFormat, category },
+			(choice) => void this.saveExport(choice),
 		).open();
+	}
+
+	private async saveExport(choice: ExportChoice): Promise<void> {
+		const selected = selectForExport(await this.noteStore.loadCatalog(), choice.category);
+		const count = selected.equations.length;
+		const what = `${count} equation${count === 1 ? "" : "s"}`;
+		const request: SaveRequest = {
+			fileName: defaultExportFileName(choice.format, choice.category),
+			extension: exportExtension(choice.format),
+			mimeType: exportMimeType(choice.format),
+			description: EXPORT_FORMAT_LABELS[choice.format],
+			contents: serializeExport(selected, choice.format),
+		};
+
+		if (hasOsSaveDialog(Platform.isMobile)) {
+			try {
+				const saved = await saveWithOsDialog(request);
+				if (saved === null) return;
+				if (saved !== undefined) {
+					new Notice(`Exported ${what} to ${saved}.`);
+					return;
+				}
+			} catch (error) {
+				new Notice(`Equation Library: the export could not be saved there (${String(error)}). Choose a vault folder instead.`);
+			}
+		}
+
+		new FolderPickerModal(this.app, (folder) => {
+			void (async () => {
+				try {
+					const path = await this.freeVaultPath(folder, request.fileName);
+					await this.logStore.writeVaultFile(path, request.contents);
+					new Notice(`Exported ${what} to ${path}.`);
+				} catch (error) {
+					new Notice(`Equation Library: the export failed (${String(error)}).`);
+				}
+			})();
+		}).open();
+	}
+
+	/** `folder/name.ext`, or `folder/name 2.ext` and so on when that is taken; never overwrites. */
+	private async freeVaultPath(folder: TFolder, fileName: string): Promise<string> {
+		const dot = fileName.lastIndexOf(".");
+		const stem = fileName.slice(0, dot);
+		const ext = fileName.slice(dot);
+		const prefix = folder.isRoot() ? "" : `${folder.path}/`;
+		for (let n = 1; ; n += 1) {
+			const path = normalizePath(`${prefix}${n === 1 ? stem : `${stem} ${n}`}${ext}`);
+			if (!(await this.app.vault.adapter.exists(path))) return path;
+		}
 	}
 
 	async promptImport(): Promise<void> {

@@ -111,6 +111,8 @@ export interface LibraryViewDeps {
 	readonly getEditor: () => EditorTarget | null;
 	/** Fires when that target changes, so the insert buttons can follow it. */
 	readonly onEditorChange: (listener: () => void) => () => void;
+	/** Opens the export dialog with `category` preselected (null for All). */
+	readonly exportEquations: (category: string | null) => void;
 	/**
 	 * Fires when a note under the library folder is written, renamed or deleted
 	 * — by this panel, by hand, or by sync. Returns an unsubscribe function.
@@ -420,6 +422,10 @@ export class LibraryRenderer {
 			.setIcon("trash-2")
 			.setTooltip("Delete the selected category (its equations move to Uncategorized)")
 			.onClick(() => this.confirmDeleteCategory());
+		new ButtonComponent(actions)
+			.setIcon("download")
+			.setTooltip("Export equations")
+			.onClick(() => this.deps.exportEquations(this.category));
 	}
 
 	/** The x only exists while there is something to clear. */
