@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_MARKDOWN_LAYOUT,
 	defaultExportFileName,
+	renderTemplate,
 	selectForExport,
 	serializeExport,
 	serializeMarkdown,
@@ -106,5 +108,85 @@ describe("exportFormat setting", () => {
 		expect(normalizeSettings({}).exportFormat).toBe("markdown");
 		expect(normalizeSettings({ exportFormat: "json" }).exportFormat).toBe("json");
 		expect(normalizeSettings({ exportFormat: "pdf" }).exportFormat).toBe("markdown");
+	});
+});
+
+describe("renderTemplate", () => {
+	it("fills placeholders, tolerating spaces inside the braces", () => {
+		expect(renderTemplate("## {{name}} ({{ category }})", { name: "Mean", category: "Stats" })).toBe("## Mean (Stats)");
+	});
+
+	it("drops a line whose placeholders are all empty, and keeps one with any filled", () => {
+		const template = "{{name}}\nSource: {{source}}\n{{symbol}} {{name}}";
+		expect(renderTemplate(template, { name: "Mean", source: "", symbol: "" })).toBe("Mean\n Mean");
+	});
+
+	it("keeps plain lines, blank lines included", () => {
+		expect(renderTemplate("a\n\nb", {})).toBe("a\n\nb");
+	});
+
+	it("leaves an unknown placeholder as written", () => {
+		expect(renderTemplate("{{nmae}}", { name: "Mean" })).toBe("{{nmae}}");
+	});
+
+	it("inserts values containing $ literally", () => {
+		expect(renderTemplate("${{latex}}$", { latex: "$$x$$" })).toBe("$$$x$$$");
+	});
+});
+
+describe("serializeMarkdown with a custom layout", () => {
+	const catalog = {
+		...mockCatalog(),
+		categories: ["Statistics"],
+		equations: [
+			equation({
+				id: "b",
+				name: "Sample Mean",
+				symbol: "\\bar{x}",
+				latex: "\\frac{1}{n}\\sum x_i",
+				category: "Statistics",
+				usage: ["Moments", "Estimators"],
+			}),
+			equation({ id: "a", name: "Bayes", latex: "P(A|B)", category: "Statistics", source: "OpenStax" }),
+		],
+	};
+
+	it("writes a bulleted list with no category headings", () => {
+		const layout = { category: "", equation: "- **{{name}}**: ${{equation}}$" };
+		expect(serializeMarkdown(catalog, layout)).toBe(
+			"- **Bayes**: $P(A|B)$\n\n- **Sample Mean**: $\\bar{x} = \\frac{1}{n}\\sum x_i$\n",
+		);
+	});
+
+	it("drops empty optional lines and collapses the blank lines they leave", () => {
+		const layout = {
+			category: "## {{category}}",
+			equation: "### {{name}}\n\nSource: {{source}}\n\nUsage: {{usage}}\n\n$${{latex}}$$",
+		};
+		expect(serializeMarkdown(catalog, layout)).toBe(
+			"## Statistics\n\n### Bayes\n\nSource: OpenStax\n\n$$P(A|B)$$\n\n" +
+				"### Sample Mean\n\nUsage: Moments, Estimators\n\n$$\\frac{1}{n}\\sum x_i$$\n",
+		);
+	});
+
+	it("matches the default layout when none is given", () => {
+		expect(serializeMarkdown(catalog)).toBe(serializeMarkdown(catalog, DEFAULT_MARKDOWN_LAYOUT));
+	});
+});
+
+describe("markdownLayout setting", () => {
+	it("defaults both templates", () => {
+		expect(normalizeSettings({}).markdownLayout).toEqual(DEFAULT_MARKDOWN_LAYOUT);
+	});
+
+	it("keeps an empty category template but restores a blank equation template", () => {
+		const layout = normalizeSettings({ markdownLayout: { category: "", equation: "   " } }).markdownLayout;
+		expect(layout).toEqual({ category: "", equation: DEFAULT_MARKDOWN_LAYOUT.equation });
+	});
+
+	it("discards templates of the wrong type", () => {
+		expect(normalizeSettings({ markdownLayout: { category: 3, equation: null } }).markdownLayout).toEqual(
+			DEFAULT_MARKDOWN_LAYOUT,
+		);
 	});
 });

@@ -310,6 +310,23 @@
 	background-color: var(--background-primary-alt);
 }
 
+/* Markdown export templates in Settings: monospace, wide, line breaks kept. */
+.eqlib-template-setting {
+	flex-wrap: wrap;
+}
+
+.eqlib-template-setting .setting-item-control {
+	flex-basis: 100%;
+}
+
+.eqlib-template-input {
+	flex: 1;
+	width: 100%;
+	resize: vertical;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+}
+
 .eqlib-error {
 	color: var(--text-error);
 	font-size: var(--font-ui-small);

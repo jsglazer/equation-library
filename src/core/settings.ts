@@ -10,7 +10,7 @@
  */
 import { InsertFormat } from "./latex";
 import { DEFAULT_LOG_CAP, LOG_CAPS, LogCap } from "./log";
-import { EXPORT_FORMATS, ExportFormat } from "./export";
+import { DEFAULT_MARKDOWN_LAYOUT, EXPORT_FORMATS, ExportFormat, MarkdownLayout } from "./export";
 import { SortOrder } from "./search";
 import { DEFAULT_TRIGGER } from "./suggest";
 import { UNCATEGORIZED } from "./types";
@@ -79,6 +79,8 @@ export interface EquationLibrarySettings {
 	readonly categories: readonly string[];
 	/** The file format the export dialog writes. */
 	readonly exportFormat: ExportFormat;
+	/** The templates the Markdown export is written from. */
+	readonly markdownLayout: MarkdownLayout;
 }
 
 export const DEFAULT_LIBRARY_FOLDER = "Equation Library";
@@ -97,6 +99,7 @@ export const DEFAULT_SETTINGS: EquationLibrarySettings = {
 	keys: DEFAULT_KEYS,
 	categories: [],
 	exportFormat: "markdown",
+	markdownLayout: DEFAULT_MARKDOWN_LAYOUT,
 };
 
 const SORT_ORDERS: readonly SortOrder[] = ["name", "created", "modified"];
@@ -147,6 +150,20 @@ export function normalizeCategories(raw: unknown): string[] {
 	return [...seen];
 }
 
+/**
+ * The Markdown export templates. A blank category template is a real choice —
+ * no category headings — but a blank equation template would export nothing,
+ * so it falls back to the default.
+ */
+export function normalizeMarkdownLayout(raw: unknown): MarkdownLayout {
+	const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+	const category = typeof record.category === "string" ? record.category : DEFAULT_MARKDOWN_LAYOUT.category;
+	const equation = typeof record.equation === "string" && record.equation.trim().length > 0
+		? record.equation
+		: DEFAULT_MARKDOWN_LAYOUT.equation;
+	return { category, equation };
+}
+
 function pickBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
@@ -187,6 +204,7 @@ export function normalizeSettings(raw: unknown): EquationLibrarySettings {
 		keys: normalizeKeys(record.keys),
 		categories: normalizeCategories(record.categories),
 		exportFormat: pickFrom(record.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat),
+		markdownLayout: normalizeMarkdownLayout(record.markdownLayout),
 	};
 }
 

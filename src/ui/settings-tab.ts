@@ -3,13 +3,19 @@
  * cap, where the library notes live and which frontmatter keys they use, the
  * log viewer, and import/export.
  */
-import { App, Notice, PluginSettingTab, Setting, TextComponent } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, TextAreaComponent, TextComponent } from "obsidian";
 import type EquationLibraryPlugin from "../main";
 import { DEFAULT_TRIGGER } from "../core/suggest";
 import { LogCap } from "../core/log";
 import { InsertFormat } from "../core/latex";
 import { DEFAULT_FILE_PREFIX, DEFAULT_KEYS, DEFAULT_LIBRARY_FOLDER, FrontmatterKeys } from "../core/settings";
-import { EXPORT_FORMAT_LABELS, ExportFormat } from "../core/export";
+import {
+	DEFAULT_MARKDOWN_LAYOUT,
+	EXPORT_FORMAT_LABELS,
+	ExportFormat,
+	MARKDOWN_PLACEHOLDERS,
+	MarkdownLayout,
+} from "../core/export";
 
 const GITHUB_URL = "https://github.com/jsglazer/equation-library";
 
@@ -22,12 +28,53 @@ export class EquationLibrarySettingTab extends PluginSettingTab {
 	 * Commits a text setting on blur or Enter rather than per keystroke, so a
 	 * half-typed path is never acted on.
 	 */
-	private commitOnBlur(text: TextComponent, commit: (value: string) => void): void {
+	private commitOnBlur(text: TextComponent | TextAreaComponent, commit: (value: string) => void): void {
 		const run = () => commit(text.getValue());
 		text.inputEl.addEventListener("blur", run);
-		text.inputEl.addEventListener("keydown", (event) => {
-			if (event.key === "Enter") run();
-		});
+		// In a text area Enter is a line break, not a commit.
+		if (text instanceof TextComponent) {
+			text.inputEl.addEventListener("keydown", (event) => {
+				if (event.key === "Enter") run();
+			});
+		}
+	}
+
+	/** One of the two Markdown export templates, with a button back to the default. */
+	private addTemplateSetting(
+		containerEl: HTMLElement,
+		field: keyof MarkdownLayout,
+		name: string,
+		desc: string,
+		rows: number,
+	): void {
+		const save = (value: string): Promise<void> =>
+			this.plugin.updateSettings({ markdownLayout: { ...this.plugin.settings.markdownLayout, [field]: value } });
+		let area: TextAreaComponent;
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.setClass("eqlib-template-setting")
+			.addTextArea((text) => {
+				area = text;
+				text.inputEl.rows = rows;
+				text.inputEl.addClass("eqlib-template-input");
+				text.inputEl.spellcheck = false;
+				text.setPlaceholder(DEFAULT_MARKDOWN_LAYOUT[field]).setValue(this.plugin.settings.markdownLayout[field]);
+				this.commitOnBlur(text, (value) => {
+					if (value === this.plugin.settings.markdownLayout[field]) return;
+					// A blank equation layout falls back to the default; show that.
+					void save(value).then(() => text.setValue(this.plugin.settings.markdownLayout[field]));
+				});
+			})
+			.addExtraButton((button) =>
+				button
+					.setIcon("rotate-ccw")
+					.setTooltip("Restore the default")
+					.onClick(() => {
+						area.setValue(DEFAULT_MARKDOWN_LAYOUT[field]);
+						void save(DEFAULT_MARKDOWN_LAYOUT[field]);
+					}),
+			);
 	}
 
 	display(): void {
@@ -169,13 +216,37 @@ export class EquationLibrarySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Export format")
-			.setDesc("The format the export dialog starts with. Markdown is a readable document with a heading per category and per equation; JSON can be imported back.")
+			.setDesc("The format the export dialog starts with. Markdown is a readable document laid out by the two templates below; JSON can be imported back.")
 			.addDropdown((dropdown) =>
 				dropdown
 					.addOptions(EXPORT_FORMAT_LABELS)
 					.setValue(this.plugin.settings.exportFormat)
 					.onChange((value) => void this.plugin.updateSettings({ exportFormat: value as ExportFormat })),
 			);
+
+		this.addTemplateSetting(
+			containerEl,
+			"category",
+			"Markdown category heading",
+			"Written before each category's equations. Leave it empty for no category headings; equations are still grouped by category.",
+			2,
+		);
+		this.addTemplateSetting(
+			containerEl,
+			"equation",
+			"Markdown equation layout",
+			"Written once per equation. A line whose placeholders are all empty is left out, so Source: {{source}} disappears when there is no source.",
+			7,
+		);
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text:
+				"Placeholders: " +
+				Object.entries(MARKDOWN_PLACEHOLDERS)
+					.map(([key, meaning]) => `{{${key}}} — ${meaning}`)
+					.join("; ") +
+				". Blocks are separated by a blank line.",
+		});
 
 		new Setting(containerEl)
 			.setName("Export equations")

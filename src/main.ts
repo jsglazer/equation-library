@@ -356,7 +356,7 @@ export default class EquationLibraryPlugin extends Plugin {
 			extension: exportExtension(choice.format),
 			mimeType: exportMimeType(choice.format),
 			description: EXPORT_FORMAT_LABELS[choice.format],
-			contents: serializeExport(selected, choice.format),
+			contents: serializeExport(selected, choice.format, this.settings.markdownLayout),
 		};
 
 		if (hasOsSaveDialog(Platform.isMobile)) {

@@ -503,10 +503,54 @@ function selectForExport(catalog, category) {
     equations: catalog.equations.filter((e) => e.category === category)
   };
 }
+var DEFAULT_MARKDOWN_LAYOUT = {
+  category: "# {{category}}",
+  equation: "## {{name}}\n\n$$\n{{equation}}\n$$\n\n{{note}}"
+};
+var MARKDOWN_PLACEHOLDERS = {
+  category: "the category name",
+  name: "the equation's name",
+  equation: "symbol = LaTeX, or just the LaTeX when there is no symbol",
+  latex: "the LaTeX alone",
+  symbol: "the symbol alone",
+  note: "the note",
+  usage: "the usage tags, comma-separated",
+  source: "the source"
+};
+var PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
+function renderTemplate(template, values) {
+  const lines = [];
+  for (const line of template.split("\n")) {
+    let used = 0;
+    let filled = 0;
+    const rendered = line.replace(PLACEHOLDER, (match, key) => {
+      if (!(key in values)) return match;
+      used += 1;
+      if (values[key].length > 0) filled += 1;
+      return values[key];
+    });
+    if (used > 0 && filled === 0) continue;
+    lines.push(rendered);
+  }
+  return lines.join("\n");
+}
 function displayLatex(equation) {
   return equation.symbol ? `${equation.symbol} = ${equation.latex}` : equation.latex;
 }
-function serializeMarkdown(catalog) {
+function equationValues(equation) {
+  var _a2, _b2, _c2, _d2, _e2, _f2, _g2;
+  return {
+    category: equation.category,
+    name: equation.name,
+    equation: displayLatex(equation).trim(),
+    latex: equation.latex.trim(),
+    symbol: (_b2 = (_a2 = equation.symbol) == null ? void 0 : _a2.trim()) != null ? _b2 : "",
+    note: (_d2 = (_c2 = equation.note) == null ? void 0 : _c2.trim()) != null ? _d2 : "",
+    usage: ((_e2 = equation.usage) != null ? _e2 : []).join(", "),
+    source: (_g2 = (_f2 = equation.source) == null ? void 0 : _f2.trim()) != null ? _g2 : ""
+  };
+}
+function serializeMarkdown(catalog, layout = DEFAULT_MARKDOWN_LAYOUT) {
   var _a2;
   const byCategory = /* @__PURE__ */ new Map();
   for (const equation of catalog.equations) {
@@ -520,20 +564,16 @@ function serializeMarkdown(catalog) {
   for (const category of [...order, ...extra]) {
     const equations = byCategory.get(category);
     if (!equations || equations.length === 0) continue;
-    const parts = [`# ${category}`];
+    const parts = [renderTemplate(layout.category, { category })];
     for (const equation of equations.slice().sort((a, b) => a.name.localeCompare(b.name))) {
-      parts.push(`## ${equation.name}`);
-      parts.push(`$$
-${displayLatex(equation).trim()}
-$$`);
-      if (equation.note) parts.push(equation.note.trim());
+      parts.push(renderTemplate(layout.equation, equationValues(equation)));
     }
-    sections.push(parts.join("\n\n"));
+    sections.push(...parts.map((part) => part.trim()).filter((part) => part.length > 0));
   }
-  return sections.join("\n\n") + "\n";
+  return sections.join("\n\n").replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n") + "\n";
 }
-function serializeExport(catalog, format) {
-  return format === "json" ? serializeCatalog(catalog) : serializeMarkdown(catalog);
+function serializeExport(catalog, format, layout = DEFAULT_MARKDOWN_LAYOUT) {
+  return format === "json" ? serializeCatalog(catalog) : serializeMarkdown(catalog, layout);
 }
 var UNSAFE_FILE_CHARS = /[\\/:*?"<>|#^[\]]/g;
 function defaultExportFileName(format, category) {
@@ -627,7 +667,8 @@ var DEFAULT_SETTINGS = {
   filePrefix: DEFAULT_FILE_PREFIX,
   keys: DEFAULT_KEYS,
   categories: [],
-  exportFormat: "markdown"
+  exportFormat: "markdown",
+  markdownLayout: DEFAULT_MARKDOWN_LAYOUT
 };
 var SORT_ORDERS = ["name", "created", "modified"];
 var INSERT_FORMATS = ["inline", "always-block"];
@@ -666,6 +707,12 @@ function normalizeCategories(raw) {
   }
   return [...seen];
 }
+function normalizeMarkdownLayout(raw) {
+  const record = typeof raw === "object" && raw !== null ? raw : {};
+  const category = typeof record.category === "string" ? record.category : DEFAULT_MARKDOWN_LAYOUT.category;
+  const equation = typeof record.equation === "string" && record.equation.trim().length > 0 ? record.equation : DEFAULT_MARKDOWN_LAYOUT.equation;
+  return { category, equation };
+}
 function pickBoolean(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -691,7 +738,8 @@ function normalizeSettings(raw) {
     filePrefix: prefix.includes("/") ? DEFAULT_FILE_PREFIX : prefix,
     keys: normalizeKeys(record.keys),
     categories: normalizeCategories(record.categories),
-    exportFormat: pickFrom(record.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat)
+    exportFormat: pickFrom(record.exportFormat, EXPORT_FORMATS, DEFAULT_SETTINGS.exportFormat),
+    markdownLayout: normalizeMarkdownLayout(record.markdownLayout)
   };
 }
 var SUGGEST_LIMIT = 20;
@@ -18836,9 +18884,32 @@ var EquationLibrarySettingTab = class extends import_obsidian11.PluginSettingTab
   commitOnBlur(text, commit) {
     const run = () => commit(text.getValue());
     text.inputEl.addEventListener("blur", run);
-    text.inputEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") run();
-    });
+    if (text instanceof import_obsidian11.TextComponent) {
+      text.inputEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") run();
+      });
+    }
+  }
+  /** One of the two Markdown export templates, with a button back to the default. */
+  addTemplateSetting(containerEl, field, name, desc, rows) {
+    const save = (value) => this.plugin.updateSettings({ markdownLayout: { ...this.plugin.settings.markdownLayout, [field]: value } });
+    let area;
+    new import_obsidian11.Setting(containerEl).setName(name).setDesc(desc).setClass("eqlib-template-setting").addTextArea((text) => {
+      area = text;
+      text.inputEl.rows = rows;
+      text.inputEl.addClass("eqlib-template-input");
+      text.inputEl.spellcheck = false;
+      text.setPlaceholder(DEFAULT_MARKDOWN_LAYOUT[field]).setValue(this.plugin.settings.markdownLayout[field]);
+      this.commitOnBlur(text, (value) => {
+        if (value === this.plugin.settings.markdownLayout[field]) return;
+        void save(value).then(() => text.setValue(this.plugin.settings.markdownLayout[field]));
+      });
+    }).addExtraButton(
+      (button) => button.setIcon("rotate-ccw").setTooltip("Restore the default").onClick(() => {
+        area.setValue(DEFAULT_MARKDOWN_LAYOUT[field]);
+        void save(DEFAULT_MARKDOWN_LAYOUT[field]);
+      })
+    );
   }
   display() {
     const { containerEl } = this;
@@ -18921,9 +18992,27 @@ var EquationLibrarySettingTab = class extends import_obsidian11.PluginSettingTab
     );
     new import_obsidian11.Setting(containerEl).setName("Equation log").setDesc(this.plugin.logStore.logPath).addButton((button) => button.setButtonText("View log").onClick(() => void this.plugin.showLogFile()));
     new import_obsidian11.Setting(containerEl).setName("Import and export").setHeading();
-    new import_obsidian11.Setting(containerEl).setName("Export format").setDesc("The format the export dialog starts with. Markdown is a readable document with a heading per category and per equation; JSON can be imported back.").addDropdown(
+    new import_obsidian11.Setting(containerEl).setName("Export format").setDesc("The format the export dialog starts with. Markdown is a readable document laid out by the two templates below; JSON can be imported back.").addDropdown(
       (dropdown) => dropdown.addOptions(EXPORT_FORMAT_LABELS).setValue(this.plugin.settings.exportFormat).onChange((value) => void this.plugin.updateSettings({ exportFormat: value }))
     );
+    this.addTemplateSetting(
+      containerEl,
+      "category",
+      "Markdown category heading",
+      "Written before each category's equations. Leave it empty for no category headings; equations are still grouped by category.",
+      2
+    );
+    this.addTemplateSetting(
+      containerEl,
+      "equation",
+      "Markdown equation layout",
+      "Written once per equation. A line whose placeholders are all empty is left out, so Source: {{source}} disappears when there is no source.",
+      7
+    );
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Placeholders: " + Object.entries(MARKDOWN_PLACEHOLDERS).map(([key, meaning]) => `{{${key}}} \u2014 ${meaning}`).join("; ") + ". Blocks are separated by a blank line."
+    });
     new import_obsidian11.Setting(containerEl).setName("Export equations").setDesc("Export the whole library or one category, then choose where to save it. Also available as a command and from the library panel.").addButton((button) => button.setButtonText("Export").onClick(() => void this.plugin.promptExport()));
     new import_obsidian11.Setting(containerEl).setName("Import equations").setDesc("Paste an exported catalog, including an equations.json from before version 1.1. Each equation becomes a note; LaTeX already in the library is skipped.").addButton((button) => button.setButtonText("Import").onClick(() => void this.plugin.promptImport()));
     new import_obsidian11.Setting(containerEl).setName("About").setHeading();
@@ -19191,7 +19280,7 @@ var EquationLibraryPlugin = class extends import_obsidian12.Plugin {
       extension: exportExtension(choice.format),
       mimeType: exportMimeType(choice.format),
       description: EXPORT_FORMAT_LABELS[choice.format],
-      contents: serializeExport(selected, choice.format)
+      contents: serializeExport(selected, choice.format, this.settings.markdownLayout)
     };
     if (hasOsSaveDialog(import_obsidian12.Platform.isMobile)) {
       try {

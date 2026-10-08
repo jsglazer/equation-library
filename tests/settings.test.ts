@@ -32,6 +32,7 @@ describe("normalizeSettings", () => {
 			keys: { ...DEFAULT_KEYS, note: "Function" },
 			categories: ["Econ", "Stats"],
 			exportFormat: "json",
+			markdownLayout: { category: "", equation: "- **{{name}}**: ${{equation}}$" },
 		};
 		expect(normalizeSettings(stored)).toEqual(stored);
 	});
