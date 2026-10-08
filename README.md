@@ -28,7 +28,7 @@ Because the note can change while the panel is open, every insert asks where it 
 | Alt/Option + double-click | Inserts it with its symbol, `$E_p = …$` |
 | Right-click a tile | Open the note, insert with symbol, insert as a `[[link]]`, rename, move to another category, duplicate, or delete |
 
-Search, filter by category and by usage tag, and sort by name, newest or recently changed from the toolbar. Search reads names first, then the note field, the LaTeX, the symbol, usage tags and source, and finally the note's body and any other frontmatter, so "the one about damped oscillation" is findable even when the name says `x(t)`. The search box carries its own **x** while there is anything to clear, and Escape clears it too. The four buttons on the right refresh the library and create, rename and delete categories. The usage filter appears only when at least one note carries a usage tag.
+Search, filter by category and by usage tag, and sort by name, newest or recently changed from the toolbar. Search reads names first, then the note field, the LaTeX, the symbol, usage tags and source, and finally the note's body and any other frontmatter, so "the one about damped oscillation" is findable even when the name says `x(t)`. The search box carries its own **x** while there is anything to clear, and Escape clears it too. The five buttons on the right refresh the library, create, rename and delete categories, and export — see [Exporting](#exporting). The usage filter appears only when at least one note carries a usage tag.
 
 **The grid keeps itself current.** Add, edit, rename or delete an equation note — in the panel, by hand in the editor, or through sync — and the tiles redraw for it; there is nothing to close and reopen. A panel sitting in a collapsed sidebar or a background tab waits rather than redrawing where nobody is looking, and catches up the moment it comes back into view. The **Refresh** button reloads from the notes on demand and reports how many it found.
 
@@ -127,6 +127,31 @@ Because the library is ordinary notes, **sync is Obsidian's problem, not the plu
 
 Version 1.0 kept the library in an `equations.json` file. That file is no longer read. On first load after upgrading, the plugin shows a notice and the old settings are dropped; to bring the equations across, open the JSON, copy it, and paste it into **Settings → Import equations**. Each becomes a note in the library folder; anything whose LaTeX is already there is skipped. The JSON file itself is left where it was.
 
+## Exporting
+
+Run **Export equations** from the command palette, click the download button in the panel's toolbar, or use **Settings → Export equations**. A dialog asks two things:
+
+- **Equations** — **All**, or a single category. Each choice shows how many equations it holds. Opened from the panel, it starts on the category the panel is filtered to.
+- **Format** — **Markdown** or **JSON**. It starts on the **Export format** setting; changing it here applies to this export only.
+
+**Choose location…** then asks where the file goes. On desktop that is your operating system's own Save As dialog, so the file can go anywhere on disk, inside the vault or out. On mobile you pick a vault folder from a searchable list instead. A vault export never overwrites anything: if `Equation Library.md` is taken, it becomes `Equation Library 2.md`. The suggested name is `Equation Library.md`, or `Equation Library - Statistics.md` for one category.
+
+**Markdown** is a readable document: a `#` heading per category (Uncategorized first, the rest A–Z, empty ones skipped), a `##` heading per equation sorted by name, the equation in a `$$` block as `symbol = equation`, and its note below it. It renders as-is in Obsidian.
+
+```markdown
+# Statistics
+
+## Bayes Theorem
+
+$$
+P(A|B) = \frac{P(B|A)P(A)}{P(B)}
+$$
+
+Posterior from likelihood and prior.
+```
+
+**JSON** is the full catalog, and the format **Settings → Import equations** reads back, so it is the one to use for moving a library between vaults.
+
 ## The log
 
 `equation-log.jsonl` in the plugin's own folder is an append-only record of what you did on *this* machine — inserts, library additions, in-place updates and accepted autocompletions — never keystrokes or drafts you did not use. It is capped (100, 500 or 1000 entries, or no limit; 500 by default) and the oldest entries are dropped first, which keeps memory use predictable on mobile. It stays local on purpose: syncing it between machines would only manufacture conflicts. The settings panel has a **View log** button that shows it in a scrollable, read-only window with a copy button, since Obsidian will not open the hidden plugin folder in a tab.
@@ -140,7 +165,8 @@ Version 1.0 kept the library in an `equations.json` file. That file is no longer
 - **New note file name prefix** — `eq-` by default; may be empty.
 - **Frontmatter keys** — the seven key names above.
 - **Log size limit** — 100 / 500 / 1000 entries, or no limit.
-- **Export library** — write a JSON snapshot of every equation to a path in your vault.
+- **Export format** — Markdown (default) or JSON; the format the export dialog starts with.
+- **Export equations** — opens the export dialog; see [Exporting](#exporting).
 - **Import equations** — paste an exported catalog (or a 1.0 `equations.json`). Each equation becomes a note; LaTeX already in the library is skipped and a clashing name is suffixed `(2)`.
 
 ## Install
@@ -152,15 +178,16 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 224 unit tests over the pure core
+npm test        # 236 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
 
 ## How it is put together
 
-- `src/core/` — pure decision logic: search, sorting, category and usage filtering, the catalog model, the note ↔ equation mapping, line-level frontmatter editing, import planning, delimiter handling and math-span scanning, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
+- `src/core/` — pure decision logic: search, sorting, category and usage filtering, the catalog model, the note ↔ equation mapping, line-level frontmatter editing, import planning, export selection and Markdown/JSON serialization, delimiter handling and math-span scanning, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
 - `src/ui/library-view.ts` — the panel: a host-agnostic renderer plus the `ItemView` that mounts it in a workspace leaf. `src/ui/editor-tracker.ts` resolves which note an insert goes into, checking that the leaf is still open and still shows the same file before anything is written.
+- `src/ui/export-modal.ts` and `src/ui/save-location.ts` — the export dialog and the save location: the OS Save As dialog through the browser File System Access API on desktop, a vault folder picker on mobile.
 - `src/ui/mathlive-adapter.ts` — the single point of contact with [MathLive](https://github.com/arnog/mathlive), which is the only math engine used. Replacing it is a one-file change.
 - `src/storage/note-store.ts` — the library as notes: reads frontmatter from Obsidian's metadata cache (synchronous, already in memory), writes through `Vault.process`, and turns the difference between the catalog before and after an edit into note creates, field rewrites and trash moves. `log-store.ts` is the action log, through `vault.adapter`. Node's `fs` and `path` are not imported anywhere.
 - `src/editor/`, `src/main.ts` — the Obsidian shell: commands, the suggester, the settings tab.
