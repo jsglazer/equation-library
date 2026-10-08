@@ -20,7 +20,7 @@
 	"author": "Josh Glazer",
 	"license": "MIT",
 	"dependencies": {
-		"mathlive": "^0.110.0"
+		"mathlive": "^0.111.0"
 	},
 	"devDependencies": {
 		"@types/node": "^25.9.3",
