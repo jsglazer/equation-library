@@ -136,7 +136,7 @@ Run **Export equations** from the command palette, click the download button in 
 
 **Choose location…** then asks where the file goes. On desktop that is your operating system's own Save As dialog, so the file can go anywhere on disk, inside the vault or out. On mobile you pick a vault folder from a searchable list instead. A vault export never overwrites anything: if `Equation Library.md` is taken, it becomes `Equation Library 2.md`. The suggested name is `Equation Library.md`, or `Equation Library - Statistics.md` for one category.
 
-**Markdown** is a readable document: a `#` heading per category (Uncategorized first, the rest A–Z, empty ones skipped), a `##` heading per equation sorted by name, the equation in a `$$` block as `symbol = equation`, and its note below it. It renders as-is in Obsidian.
+**Markdown** is a readable document. By default it has a `#` heading per category (Uncategorized first, the rest A–Z, empty ones skipped), a `##` heading per equation sorted by name, the equation in a `$$` block as `symbol = equation`, and its note below it. It renders as-is in Obsidian.
 
 ```markdown
 # Statistics
@@ -148,6 +148,25 @@ P(A|B) = \frac{P(B|A)P(A)}{P(B)}
 $$
 
 Posterior from likelihood and prior.
+```
+
+**The Markdown layout is yours to change.** Settings has two templates: **Markdown category heading**, written before each category's equations, and **Markdown equation layout**, written once per equation. Each has a ↺ button that restores the default. They take these placeholders:
+
+| Placeholder | Becomes |
+| --- | --- |
+| `{{category}}` | The category name |
+| `{{name}}` | The equation's name |
+| `{{equation}}` | `symbol = LaTeX`, or just the LaTeX when there is no symbol |
+| `{{latex}}` / `{{symbol}}` | The LaTeX or the symbol alone |
+| `{{note}}` | The note |
+| `{{usage}}` | The usage tags, comma-separated |
+| `{{source}}` | The source |
+
+A line whose placeholders all come out empty is left out, so `Source: {{source}}` disappears for an equation with no source instead of leaving a bare label. An empty category template drops the headings; equations are still grouped by category. A misspelled placeholder is left in the output as written, so it is easy to spot. For example, a compact list with no headings:
+
+```text
+Category heading:   (empty)
+Equation layout:    - **{{name}}**: ${{equation}}$
 ```
 
 **JSON** is the full catalog, and the format **Settings → Import equations** reads back, so it is the one to use for moving a library between vaults.
@@ -166,6 +185,7 @@ Posterior from likelihood and prior.
 - **Frontmatter keys** — the seven key names above.
 - **Log size limit** — 100 / 500 / 1000 entries, or no limit.
 - **Export format** — Markdown (default) or JSON; the format the export dialog starts with.
+- **Markdown category heading** and **Markdown equation layout** — the templates the Markdown export is written from; see [Exporting](#exporting).
 - **Export equations** — opens the export dialog; see [Exporting](#exporting).
 - **Import equations** — paste an exported catalog (or a 1.0 `equations.json`). Each equation becomes a note; LaTeX already in the library is skipped and a clashing name is suffixed `(2)`.
 
@@ -178,14 +198,14 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 236 unit tests over the pure core
+npm test        # 247 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
 
 ## How it is put together
 
-- `src/core/` — pure decision logic: search, sorting, category and usage filtering, the catalog model, the note ↔ equation mapping, line-level frontmatter editing, import planning, export selection and Markdown/JSON serialization, delimiter handling and math-span scanning, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
+- `src/core/` — pure decision logic: search, sorting, category and usage filtering, the catalog model, the note ↔ equation mapping, line-level frontmatter editing, import planning, export selection, Markdown templating and JSON serialization, delimiter handling and math-span scanning, the autocomplete state machine, log capping. No imports from `obsidian`, no DOM, no clock, no I/O; ids and timestamps are passed in. This is what the test suite covers.
 - `src/ui/library-view.ts` — the panel: a host-agnostic renderer plus the `ItemView` that mounts it in a workspace leaf. `src/ui/editor-tracker.ts` resolves which note an insert goes into, checking that the leaf is still open and still shows the same file before anything is written.
 - `src/ui/export-modal.ts` and `src/ui/save-location.ts` — the export dialog and the save location: the OS Save As dialog through the browser File System Access API on desktop, a vault folder picker on mobile.
 - `src/ui/mathlive-adapter.ts` — the single point of contact with [MathLive](https://github.com/arnog/mathlive), which is the only math engine used. Replacing it is a one-file change.
