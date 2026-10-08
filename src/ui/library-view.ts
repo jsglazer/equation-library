@@ -1019,7 +1019,11 @@ export class LibraryRenderer {
 		}
 	}
 
-	private async addCurrentEquation(): Promise<Equation | null> {
+	/**
+	 * Saves the generator's equation. `created` is false when the LaTeX was
+	 * already in the library and the existing equation was loaded instead.
+	 */
+	private async addCurrentEquation(): Promise<{ equation: Equation; created: boolean } | null> {
 		const latex = this.currentLatex();
 		if (latex.length === 0) {
 			new Notice("Nothing to add — the generator is empty.");
@@ -1042,7 +1046,7 @@ export class LibraryRenderer {
 		if (existing) {
 			this.adoptEquation(existing);
 			new Notice(`Already in the library as "${existing.name}".`);
-			return existing;
+			return { equation: existing, created: false };
 		}
 		const result = addEquation(this.catalog, {
 			id: this.deps.mintId(),
@@ -1061,15 +1065,23 @@ export class LibraryRenderer {
 		const saved = await this.commit(result.value);
 		if (saved === null) return null;
 		// Storage assigned the real id; find the saved equation by its LaTeX.
-		const added = findByLatex(saved, pending.latex) ?? pending;
-		if (added.name !== name) new Notice(`Saved as "${added.name}" — that name was taken.`);
-		this.adoptEquation(added);
-		return added;
+		// Storage verifies the note reads back, so a miss here is not expected —
+		// but adopting the placeholder would leave Update pointing at nothing.
+		const added = findByLatex(saved, pending.latex);
+		if (!added) {
+			new Notice(`Equation Library: "${name}" was saved but could not be found in the library afterwards.`);
+			return null;
+		}
+		new Notice(added.name !== name ? `Saved as "${added.name}" — that name was taken.` : `Added "${added.name}".`);
+		return { equation: added, created: true };
 	}
 
 	private async onAddToLibrary(): Promise<void> {
-		const added = await this.addCurrentEquation();
-		if (!added) return;
+		const result = await this.addCurrentEquation();
+		if (!result) return;
+		const added = result.equation;
+		// A new equation is done with: clear the fields for the next one.
+		if (result.created) this.clearGenerator();
 		this.deps.log({
 			action: "add-to-library",
 			latex: added.latex,
@@ -1079,9 +1091,11 @@ export class LibraryRenderer {
 	}
 
 	private async onAddAndInsert(event: MouseEvent | KeyboardEvent | undefined): Promise<void> {
-		const added = await this.addCurrentEquation();
-		if (!added) return;
+		const result = await this.addCurrentEquation();
+		if (!result) return;
+		const added = result.equation;
 		if (!this.insertIntoEditor(added.latex, event)) return;
+		if (result.created) this.clearGenerator();
 		this.deps.log({
 			action: "add-and-insert",
 			latex: added.latex,

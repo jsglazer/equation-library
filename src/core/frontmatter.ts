@@ -76,9 +76,27 @@ export function yamlScalar(value: string): string {
 	return value;
 }
 
-/** The lines that represent `key: value` — one line for a scalar, a block for a list. */
+/**
+ * A multi-line value as a literal block scalar (`|-`), each line indented two
+ * spaces, so its line breaks survive a round trip. A quoted scalar cannot do
+ * this: a continuation line at column 0 is invalid YAML, and Obsidian drops
+ * the whole frontmatter of a note that contains one.
+ *
+ * Blank lines are written empty; `setFrontmatterFields` treats them as part
+ * of the block when indented lines follow. A first line that itself starts
+ * with spaces needs an explicit indentation indicator.
+ */
+function blockLines(key: string, value: string): string[] {
+	const lines = value.split(/\r?\n/);
+	const first = lines.find((line) => line.trim().length > 0) ?? "";
+	const header = /^\s/.test(first) ? "|2-" : "|-";
+	return [`${key}: ${header}`, ...lines.map((line) => (line.trim().length === 0 ? "" : `  ${line.replace(/\s+$/, "")}`))];
+}
+
+/** The lines that represent `key: value` — one line for a scalar, a block for a list or multi-line text. */
 export function fieldLines(key: string, value: FieldValue): string[] {
 	if (typeof value === "string") {
+		if (/[\r\n]/.test(value)) return blockLines(key, value);
 		const scalar = yamlScalar(value);
 		return [scalar.length > 0 ? `${key}: ${scalar}` : `${key}: `];
 	}
@@ -109,7 +127,13 @@ export function setFrontmatterFields(text: string, patch: Readonly<Record<string
 			continue;
 		}
 		let end = start + 1;
-		while (end < block.length && !isKeyLine(block[end]) && isContinuation(block[end])) end += 1;
+		for (;;) {
+			// Blank lines belong to the key only when its block carries on after them.
+			let next = end;
+			while (next < block.length && block[next].trim().length === 0) next += 1;
+			if (next >= block.length || isKeyLine(block[next]) || !isContinuation(block[next])) break;
+			end = next + 1;
+		}
 		block.splice(start, end - start, ...replacement);
 	}
 

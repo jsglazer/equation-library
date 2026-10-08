@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildNoteText, fieldLines, setFrontmatterFields, splitNote, templateKeys, yamlScalar } from "../src/core/frontmatter";
+import { parse as parseYaml } from "yaml";
 
 const NOTE = [
 	"---",
@@ -186,5 +187,47 @@ describe("buildNoteText", () => {
 	it("keeps a plain template value the plugin does not own", () => {
 		const out = buildNoteText({ fields: [["Name", "x"]], template: "---\nDocType: Equation\nFlag: Y\n---\n" });
 		expect(out).toBe("---\nDocType: Equation\nFlag: Y\nName: x\n---\n");
+	});
+});
+
+describe("multi-line values", () => {
+	const NOTE_TEXT = "Typical functional form for estimating demand\nPindyck 4.6.2 (B3: 162) (eq 4.4)";
+
+	it("writes a literal block scalar a strict YAML parser reads back unchanged", () => {
+		const lines = fieldLines("Function", NOTE_TEXT);
+		expect(lines).toEqual(["Function: |-", "  Typical functional form for estimating demand", "  Pindyck 4.6.2 (B3: 162) (eq 4.4)"]);
+		expect(parseYaml(lines.join("\n")).Function).toBe(NOTE_TEXT);
+	});
+
+	it("keeps blank lines and a leading indent", () => {
+		const value = "  indented first\n\nafter a gap";
+		const lines = fieldLines("Function", value);
+		expect(lines[0]).toBe("Function: |2-");
+		expect(parseYaml(lines.join("\n")).Function).toBe(value);
+	});
+
+	it("builds a new note whose whole frontmatter parses", () => {
+		const out = buildNoteText({
+			fields: [
+				["Name", "Log Linear"],
+				["Function", NOTE_TEXT],
+			],
+			template: "---\nDocType: Equation\nFunction: \nCategory: \n---\n",
+		});
+		const fm = parseYaml(splitNote(out).frontmatter ?? "");
+		expect(fm.Function).toBe(NOTE_TEXT);
+		expect(fm.Category).toBeNull();
+	});
+
+	it("replaces a block that contains blank lines without leaving any of it behind", () => {
+		const text = ["---", "Name: x", "Function: |-", "  one", "", "  two", "Category: Econ", "---", ""].join("\n");
+		const out = setFrontmatterFields(text, { Function: "three" });
+		expect(out).toBe(["---", "Name: x", "Function: three", "Category: Econ", "---", ""].join("\n"));
+	});
+
+	it("does not swallow a blank line that ends the block", () => {
+		const text = ["---", "Function: |-", "  one", "", "Category: Econ", "---", ""].join("\n");
+		const out = setFrontmatterFields(text, { Function: "two" });
+		expect(out).toBe(["---", "Function: two", "", "Category: Econ", "---", ""].join("\n"));
 	});
 });

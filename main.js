@@ -728,8 +728,16 @@ function yamlScalar(value) {
   if (NEEDS_QUOTES.test(value)) return `'${value.replace(/'/g, "''")}'`;
   return value;
 }
+function blockLines(key, value) {
+  var _a2;
+  const lines = value.split(/\r?\n/);
+  const first = (_a2 = lines.find((line) => line.trim().length > 0)) != null ? _a2 : "";
+  const header = /^\s/.test(first) ? "|2-" : "|-";
+  return [`${key}: ${header}`, ...lines.map((line) => line.trim().length === 0 ? "" : `  ${line.replace(/\s+$/, "")}`)];
+}
 function fieldLines(key, value) {
   if (typeof value === "string") {
+    if (/[\r\n]/.test(value)) return blockLines(key, value);
     const scalar = yamlScalar(value);
     return [scalar.length > 0 ? `${key}: ${scalar}` : `${key}: `];
   }
@@ -752,7 +760,12 @@ function setFrontmatterFields(text, patch) {
       continue;
     }
     let end = start + 1;
-    while (end < block.length && !isKeyLine(block[end]) && isContinuation(block[end])) end += 1;
+    for (; ; ) {
+      let next = end;
+      while (next < block.length && block[next].trim().length === 0) next += 1;
+      if (next >= block.length || isKeyLine(block[next]) || !isContinuation(block[next])) break;
+      end = next + 1;
+    }
     block.splice(start, end - start, ...replacement);
   }
   const body = split.frontmatter === null ? text : split.body;
@@ -1028,8 +1041,12 @@ var NoteStore = class {
     let created = 0;
     await this.enqueue(async () => {
       for (const equation of equations) {
-        await this.createNoteFile(equation);
-        created += 1;
+        try {
+          await this.createNoteFile(equation);
+          created += 1;
+        } catch (e) {
+          continue;
+        }
       }
     });
     this.invalidate();
@@ -1070,8 +1087,35 @@ var NoteStore = class {
       settings.keys
     );
     const text = buildNoteText({ fields, template: await this.templateText() });
-    await this.app.vault.create(path, text);
+    const file = await this.app.vault.create(path, text);
+    await this.waitForMetadata(file);
+    if (!this.readFile(file)) {
+      console.warn(`Equation Library: ${path} was created but its frontmatter could not be read.
+${text}`);
+      throw new Error(`${path} was created but its frontmatter could not be read \u2014 open the note to check it`);
+    }
     return path;
+  }
+  /**
+   * Resolves once the metadata cache has parsed `file`. A note that was just
+   * created is not in the cache yet, and reading it back too early would look
+   * exactly like a note with broken frontmatter.
+   */
+  waitForMetadata(file) {
+    var _a2;
+    const cache = this.app.metadataCache;
+    if ((_a2 = cache.getFileCache(file)) == null ? void 0 : _a2.frontmatter) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        window.clearTimeout(timer);
+        cache.offref(ref);
+        resolve();
+      };
+      const ref = cache.on("changed", (changed) => {
+        if (changed.path === file.path) done();
+      });
+      const timer = window.setTimeout(done, 2e3);
+    });
   }
   async writeFields(path, patch) {
     const file = this.app.vault.getFileByPath(path);
@@ -18111,8 +18155,11 @@ var LibraryRenderer = class {
       new import_obsidian5.Notice(`Could not copy the equation as a PNG: ${String(error)}`);
     }
   }
+  /**
+   * Saves the generator's equation. `created` is false when the LaTeX was
+   * already in the library and the existing equation was loaded instead.
+   */
   async addCurrentEquation() {
-    var _a2;
     const latex = this.currentLatex();
     if (latex.length === 0) {
       new import_obsidian5.Notice("Nothing to add \u2014 the generator is empty.");
@@ -18132,7 +18179,7 @@ var LibraryRenderer = class {
     if (existing) {
       this.adoptEquation(existing);
       new import_obsidian5.Notice(`Already in the library as "${existing.name}".`);
-      return existing;
+      return { equation: existing, created: false };
     }
     const result = addEquation(this.catalog, {
       id: this.deps.mintId(),
@@ -18150,14 +18197,19 @@ var LibraryRenderer = class {
     const pending = result.value.equations[result.value.equations.length - 1];
     const saved = await this.commit(result.value);
     if (saved === null) return null;
-    const added = (_a2 = findByLatex(saved, pending.latex)) != null ? _a2 : pending;
-    if (added.name !== name) new import_obsidian5.Notice(`Saved as "${added.name}" \u2014 that name was taken.`);
-    this.adoptEquation(added);
-    return added;
+    const added = findByLatex(saved, pending.latex);
+    if (!added) {
+      new import_obsidian5.Notice(`Equation Library: "${name}" was saved but could not be found in the library afterwards.`);
+      return null;
+    }
+    new import_obsidian5.Notice(added.name !== name ? `Saved as "${added.name}" \u2014 that name was taken.` : `Added "${added.name}".`);
+    return { equation: added, created: true };
   }
   async onAddToLibrary() {
-    const added = await this.addCurrentEquation();
-    if (!added) return;
+    const result = await this.addCurrentEquation();
+    if (!result) return;
+    const added = result.equation;
+    if (result.created) this.clearGenerator();
     this.deps.log({
       action: "add-to-library",
       latex: added.latex,
@@ -18166,9 +18218,11 @@ var LibraryRenderer = class {
     });
   }
   async onAddAndInsert(event) {
-    const added = await this.addCurrentEquation();
-    if (!added) return;
+    const result = await this.addCurrentEquation();
+    if (!result) return;
+    const added = result.equation;
     if (!this.insertIntoEditor(added.latex, event)) return;
+    if (result.created) this.clearGenerator();
     this.deps.log({
       action: "add-and-insert",
       latex: added.latex,

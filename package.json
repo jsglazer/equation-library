@@ -1,6 +1,6 @@
 {
 	"name": "equation-library",
-	"version": "1.1.4",
+	"version": "1.1.5",
 	"description": "Pop-up library of custom math formulas kept as Markdown notes, with a live LaTeX generator and editor autocomplete.",
 	"main": "main.js",
 	"scripts": {
@@ -28,6 +28,7 @@
 		"obsidian": "latest",
 		"tslib": "2.8.1",
 		"typescript": "^6.0.3",
-		"vitest": "^4.1.8"
+		"vitest": "^4.1.8",
+		"yaml": "^2.5.1"
 	}
 }

@@ -183,8 +183,14 @@ export class NoteStore {
 		let created = 0;
 		await this.enqueue(async () => {
 			for (const equation of equations) {
-				await this.createNoteFile(equation);
-				created += 1;
+				// One unreadable note must not abort the rest of an import; the
+				// failure is already logged to the console by createNoteFile.
+				try {
+					await this.createNoteFile(equation);
+					created += 1;
+				} catch {
+					continue;
+				}
 			}
 		});
 		this.invalidate();
@@ -227,8 +233,36 @@ export class NoteStore {
 			settings.keys,
 		);
 		const text = buildNoteText({ fields, template: await this.templateText() });
-		await this.app.vault.create(path, text);
+		const file = await this.app.vault.create(path, text);
+		await this.waitForMetadata(file);
+		if (!this.readFile(file)) {
+			// The note exists but the library cannot see it, so every further Add
+			// would write another copy. Say so instead of failing silently.
+			console.warn(`Equation Library: ${path} was created but its frontmatter could not be read.\n${text}`);
+			throw new Error(`${path} was created but its frontmatter could not be read — open the note to check it`);
+		}
 		return path;
+	}
+
+	/**
+	 * Resolves once the metadata cache has parsed `file`. A note that was just
+	 * created is not in the cache yet, and reading it back too early would look
+	 * exactly like a note with broken frontmatter.
+	 */
+	private waitForMetadata(file: TFile): Promise<void> {
+		const cache = this.app.metadataCache;
+		if (cache.getFileCache(file)?.frontmatter) return Promise.resolve();
+		return new Promise((resolve) => {
+			const done = () => {
+				window.clearTimeout(timer);
+				cache.offref(ref);
+				resolve();
+			};
+			const ref = cache.on("changed", (changed) => {
+				if (changed.path === file.path) done();
+			});
+			const timer = window.setTimeout(done, 2000);
+		});
 	}
 
 	private async writeFields(path: string, patch: WritableFields): Promise<void> {
