@@ -39,13 +39,13 @@ Alongside the name and category sit an optional **Symbol** — the left-hand sid
 | Button | Result |
 | --- | --- |
 | Insert at cursor | Inserts what is in the generator into the active note |
-| Add to Library | Creates a new equation note under the chosen name and category |
-| Add & Insert | Both, in that order |
+| Add to Library | Creates a new equation note under the chosen name and category, then clears the generator for the next one |
+| Add & Insert | Both, in that order — saves, inserts, then clears the generator |
 | Update *(after clicking a tile)* | Saves the generator's current name, symbol, LaTeX, category and note back to that same note, in place |
 | Open note *(after clicking a tile)* | Opens that equation's note beside the panel, which stays open |
 | New | Clears the generator — LaTeX, name, symbol, note and any pending replace — for a fresh equation, keeping the category you were filing into |
 
-Adding an equation whose LaTeX is already in the library does not make a copy: the existing note is loaded for editing instead, so a second click on **Add to Library** is harmless, and **Add & Insert** still inserts it. **Add to Library** in fact steps out of the way entirely while the generator holds a saved equation exactly as it was loaded — there is nothing it could add — and reappears the moment you change any field, which is the point at which adding means a second equation alongside the first rather than the **Update** that would overwrite it.
+Once a new equation is saved the generator empties itself, the same as **New** (the category you were filing into is kept), so the next equation starts from a clean slate and **Add to Library** is right there for it. Adding an equation whose LaTeX is already in the library does not make a copy: the existing note is loaded for editing instead — and its fields are left in place rather than cleared — so a second click on **Add to Library** is harmless, and **Add & Insert** still inserts it. **Add to Library** in fact steps out of the way entirely while the generator holds a saved equation exactly as it was loaded — there is nothing it could add — and reappears the moment you change any field, which is the point at which adding means a second equation alongside the first rather than the **Update** that would overwrite it.
 
 **Cmd/Ctrl + Return** fires the primary button — *Insert at cursor*, or *Replace in note* when the panel was opened on an equation in the note — and **Shift + Cmd/Ctrl + Return** fires *Add & Insert*. Both work from anywhere in the panel: the LaTeX box, the name, the note.
 
@@ -109,15 +109,15 @@ Anything you like: a derivation, worked examples, links to the chapters that use
 | LaTeX | `Eq` | yes | The equation, stored `$…$`-wrapped so an inline Dataview field such as `` `= this.Eq` `` renders it |
 | Symbol | `Smb` | yes | The left-hand side; tiles show `symbol = equation` |
 | Category | `Category` | yes | Single-valued. Missing or blank means `Uncategorized` |
-| Note | `Note` | yes | The generator's note field |
+| Note | `Note` | yes | The generator's note field. Line breaks are kept: a multi-line note is written as a YAML `|-` block |
 | Usage | `Usage` | no | A list of tags; feeds the usage filter and the search |
 | Source | `Source` | no | Where it came from; searched |
 
 Every key name is a setting, so an existing collection of notes can be adopted as it stands — if your notes say `LaTeX:` and `Symbol:`, tell the plugin so. Any other key in a note (`Cond`, `AltName`, `Flag`, `R`, …) is never touched, but its text is still searched.
 
-**Writes are surgical.** Saving an edit rewrites only the lines of the keys that changed, in place; the plugin never re-serializes the frontmatter block, so your key order, spacing, list style and blank fields stay as you left them, and the body is never read for writing at all. Deleting an equation moves its note to the trash, following your Obsidian trash setting. Renaming changes the `Name` field, not the file, so your `[[links]]` keep working.
+**Writes are surgical.** Saving an edit rewrites only the lines of the keys that changed, in place; the plugin never re-serializes the frontmatter block, so your key order, spacing, list style and blank fields stay as you left them, and the body is never read for writing at all. Multi-line values are written as YAML literal blocks (`Note: |-` followed by indented lines), which round-trip exactly. Deleting an equation moves its note to the trash, following your Obsidian trash setting. Renaming changes the `Name` field, not the file, so your `[[links]]` keep working.
 
-**New notes** are named from the equation's name with a configurable prefix (`eq-Bayes-Theorem.md`), disambiguated with `-2`, `-3` when taken. If you name a **template note** in the settings, every new equation note is scaffolded from it: the template's frontmatter keys are copied in its order (a Templater `<% … %>` value is blanked), the plugin fills in its own keys, and the template's body becomes the new note's body — so your Dataview backlinks block or standard headings appear in every equation note.
+**New notes** are named from the equation's name with a configurable prefix (`eq-Bayes-Theorem.md`), disambiguated with `-2`, `-3` when taken. Each new note is read back once Obsidian has indexed it; if its frontmatter cannot be read, the save reports it — a notice, plus the note's full text in the developer console — instead of quietly leaving a note the library cannot see. If you name a **template note** in the settings, every new equation note is scaffolded from it: the template's frontmatter keys are copied in its order (a Templater `<% … %>` value is blanked), the plugin fills in its own keys, and the template's body becomes the new note's body — so your Dataview backlinks block or standard headings appear in every equation note.
 
 **Categories** are whatever the notes' `Category` values say, plus any you create in the panel before assigning an equation to them (those are remembered in the plugin's settings). Renaming a category rewrites the field in every member note; deleting one blanks it, moving the members to `Uncategorized`, which cannot itself be renamed or deleted. Equations are never deleted as a side effect.
 
@@ -152,7 +152,7 @@ Not yet in the community plugin browser. To install manually, copy `main.js`, `m
 ```bash
 npm install
 npm run build   # generates the bundled stylesheet, typechecks, then bundles main.js
-npm test        # 219 unit tests over the pure core
+npm test        # 224 unit tests over the pure core
 ```
 
 `npm run dev` rebuilds on change.
