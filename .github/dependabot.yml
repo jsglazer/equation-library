@@ -13,3 +13,8 @@ updates:
     directory: '/'
     schedule:
       interval: weekly
+    # One PR for all actions: github/codeql-action's init/analyze/upload-sarif must move together,
+    # and separate PRs leave them on mismatched versions so every one fails.
+    groups:
+      actions:
+        patterns: ['*']
